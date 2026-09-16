@@ -76,7 +76,12 @@ export default function ReceiptScreen() {
       <View style={styles.footer}>
         <Button
           label="New Order"
-          onPress={() => router.dismissAll()}
+          onPress={() => {
+            // Clear the checkout/receipt stack, then land on Menu rather than
+            // the (now empty) Cart tab the order was started from.
+            router.dismissAll();
+            router.replace('/');
+          }}
           accessibilityHint="Returns to the menu to start a new order"
         />
       </View>
