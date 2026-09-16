@@ -46,33 +46,33 @@ export type PaymentMethod = z.infer<typeof PaymentMethodSchema>;
 
 export type TicketStatus = 'open' | 'paid' | 'void';
 
-export interface ModifierOptionDto {
+export type ModifierOptionDto = {
   id: string;
   name: string;
   priceDeltaCents: number;
 }
 
-export interface ModifierGroupDto {
+export type ModifierGroupDto = {
   id: string;
   name: string;
   required: boolean;
   options: ModifierOptionDto[];
 }
 
-export interface ProductDto {
+export type ProductDto = {
   id: string;
   name: string;
   priceCents: number;
   modifierGroups: ModifierGroupDto[];
 }
 
-export interface TicketItemModifierDto {
+export type TicketItemModifierDto = {
   name: string;
   groupName: string;
   priceDeltaCents: number;
 }
 
-export interface TicketItemDto {
+export type TicketItemDto = {
   id: string;
   productId: string;
   productName: string;
@@ -82,7 +82,7 @@ export interface TicketItemDto {
   modifiers: TicketItemModifierDto[];
 }
 
-export interface TicketDto {
+export type TicketDto = {
   id: string;
   status: TicketStatus;
   subtotalCents: number;
@@ -95,7 +95,7 @@ export interface TicketDto {
   items: TicketItemDto[];
 }
 
-export interface TicketSummaryDto {
+export type TicketSummaryDto = {
   id: string;
   status: TicketStatus;
   totalCents: number;
@@ -103,7 +103,7 @@ export interface TicketSummaryDto {
   createdAt: string;
 }
 
-export interface ListTicketsResponse {
+export type ListTicketsResponse = {
   tickets: TicketSummaryDto[];
   total: number;
 }

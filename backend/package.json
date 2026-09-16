@@ -4,18 +4,21 @@
   "private": true,
   "description": "Dripos Lite — POS backend. Fastify + Drizzle + PostgreSQL.",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/scripts/seed-cli.ts",
-    "inspect:mock": "tsx scripts/inspect-mock-api.ts",
+    "inspect:mock": "tsx src/scripts/inspect-mock-api.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "seed:fixture": "tsx src/scripts/seed-fixture.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
@@ -29,6 +32,6 @@
     "@types/pg": "^8.23.1",
     "tsx": "^4.23.13",
     "typescript": "~6.0.3",
-    "vitest": "^3.2.4"
+    "vitest": "^5.0.1"
   }
 }

@@ -1,0 +1,56 @@
+{
+  "_comment": "Offline stand-in for the Dripos mock API, in the shape the assessment spec implies. Lets the seed, the API and the app be exercised end to end with no network. Replace by pointing MOCK_API_URL at the real service.",
+  "products": [
+    { "id": "prod_drip",      "name": "Drip Coffee",   "priceCents": 325, "modifierGroupIds": ["grp_size", "grp_milk"] },
+    { "id": "prod_iced",      "name": "Iced Coffee",   "priceCents": 450, "modifierGroupIds": ["grp_size", "grp_milk", "grp_sweetener"] },
+    { "id": "prod_coldbrew",  "name": "Cold Brew",     "priceCents": 495, "modifierGroupIds": ["grp_size", "grp_milk"] },
+    { "id": "prod_latte",     "name": "Latte",         "priceCents": 525, "modifierGroupIds": ["grp_size", "grp_milk", "grp_shots", "grp_sweetener"] },
+    { "id": "prod_matcha",    "name": "Matcha Latte",  "priceCents": 575, "modifierGroupIds": ["grp_size", "grp_milk"] },
+    { "id": "prod_croissant", "name": "Butter Croissant", "priceCents": 375, "modifierGroupIds": [] },
+    { "id": "prod_cookie",    "name": "Chocolate Chip Cookie", "priceCents": 300, "modifierGroupIds": [] }
+  ],
+  "modifierGroups": [
+    {
+      "id": "grp_size",
+      "name": "Size",
+      "required": true,
+      "options": [
+        { "id": "opt_size_sm", "name": "Small",  "priceDeltaCents": -50 },
+        { "id": "opt_size_md", "name": "Medium", "priceDeltaCents": 0 },
+        { "id": "opt_size_lg", "name": "Large",  "priceDeltaCents": 75 }
+      ]
+    },
+    {
+      "id": "grp_milk",
+      "name": "Milk",
+      "required": false,
+      "options": [
+        { "id": "opt_milk_whole", "name": "Whole Milk", "priceDeltaCents": 0 },
+        { "id": "opt_milk_skim",  "name": "Skim Milk",  "priceDeltaCents": 0 },
+        { "id": "opt_milk_oat",   "name": "Oat Milk",   "priceDeltaCents": 75 },
+        { "id": "opt_milk_almond","name": "Almond Milk","priceDeltaCents": 65 }
+      ]
+    },
+    {
+      "id": "grp_shots",
+      "name": "Espresso Shots",
+      "required": false,
+      "options": [
+        { "id": "opt_shot_single", "name": "Single", "priceDeltaCents": 0 },
+        { "id": "opt_shot_double", "name": "Double", "priceDeltaCents": 100 },
+        { "id": "opt_shot_triple", "name": "Triple", "priceDeltaCents": 175 }
+      ]
+    },
+    {
+      "id": "grp_sweetener",
+      "name": "Sweetener",
+      "required": false,
+      "options": [
+        { "id": "opt_sweet_none",   "name": "None",          "priceDeltaCents": 0 },
+        { "id": "opt_sweet_vanilla","name": "Vanilla Syrup", "priceDeltaCents": 60 },
+        { "id": "opt_sweet_caramel","name": "Caramel Syrup", "priceDeltaCents": 60 },
+        { "id": "opt_sweet_honey",  "name": "Honey",         "priceDeltaCents": 40 }
+      ]
+    }
+  ]
+}
