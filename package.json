@@ -1,0 +1,19 @@
+{
+  "name": "dripos-lite",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dripos Lite — a minimal coffee-shop point of sale. Expo app plus Fastify/Postgres backend.",
+  "scripts": {
+    "check:shared": "node scripts/check-shared.mjs",
+    "backend:dev": "npm --prefix backend run dev",
+    "backend:migrate": "npm --prefix backend run migrate",
+    "backend:seed": "npm --prefix backend run seed",
+    "backend:test": "npm --prefix backend test",
+    "backend:typecheck": "npm --prefix backend run typecheck",
+    "mobile:start": "npm --prefix apps/mobile start",
+    "mobile:typecheck": "npm --prefix apps/mobile run typecheck",
+    "install:all": "npm --prefix backend install && npm --prefix apps/mobile install",
+    "typecheck": "npm run backend:typecheck && npm run mobile:typecheck && npm run check:shared"
+  },
+  "engines": { "node": ">=20" }
+}
