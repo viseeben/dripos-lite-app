@@ -34,5 +34,8 @@
     "ios": "expo start --ios",
     "typecheck": "tsc --noEmit"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "react-dom": "19.2.3"
+  }
 }
