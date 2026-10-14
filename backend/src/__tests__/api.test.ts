@@ -359,23 +359,46 @@ describe('POST /tickets/:id/pay', () => {
     expect(response.json().code).toBe('UNSUPPORTED_PAYMENT_METHOD');
   });
 
-  it('refuses to pay the same ticket twice', async () => {
+  it('treats an identical repeat as a replay and charges only once', async () => {
+    // A retried request is indistinguishable from the original, and a till
+    // syncing an offline sale will retry. It must get the receipt, not an error.
     const ticket = await openTicket();
     const payload = { paymentMethod: 'cash', amountTenderedCents: 1000 };
     const first = await app.inject({ method: 'POST', url: `/tickets/${ticket.id}/pay`, payload });
     expect(first.statusCode).toBe(200);
 
     const second = await app.inject({ method: 'POST', url: `/tickets/${ticket.id}/pay`, payload });
-    expect(second.statusCode).toBe(409);
-    expect(second.json().code).toBe('TICKET_NOT_OPEN');
+    expect(second.statusCode).toBe(200);
+    expect(second.json<TicketDto>()).toMatchObject({
+      id: ticket.id,
+      status: 'paid',
+      amountTenderedCents: 1000,
+      changeDueCents: 20,
+    });
+
+    const { rows } = await pool.query(
+      'SELECT status, change_due_cents FROM tickets WHERE id = $1',
+      [ticket.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].change_due_cents).toBe(20);
   });
 
-  it('lets only one of two concurrent payments win', async () => {
+  it('lets only one of two conflicting concurrent payments win', async () => {
+    // Different amounts are genuinely in conflict, so the compare-and-set must
+    // still let exactly one through.
     const ticket = await openTicket();
-    const payload = { paymentMethod: 'cash', amountTenderedCents: 1000 };
     const [a, b] = await Promise.all([
-      app.inject({ method: 'POST', url: `/tickets/${ticket.id}/pay`, payload }),
-      app.inject({ method: 'POST', url: `/tickets/${ticket.id}/pay`, payload }),
+      app.inject({
+        method: 'POST',
+        url: `/tickets/${ticket.id}/pay`,
+        payload: { paymentMethod: 'cash', amountTenderedCents: 1000 },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/tickets/${ticket.id}/pay`,
+        payload: { paymentMethod: 'cash', amountTenderedCents: 5000 },
+      }),
     ]);
 
     const codes = [a.statusCode, b.statusCode].sort((x, y) => x - y);
@@ -443,6 +466,143 @@ describe('GET /tickets/:id', () => {
     const response = await app.inject({ method: 'GET', url: '/tickets/not-a-uuid' });
     expect(response.statusCode).toBe(400);
     expect(response.json().code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('offline sync (idempotent replay)', () => {
+  const offlineSale = (clientTicketId: string, placedAt?: string) => {
+    const iced = findProduct('Latte');
+    return {
+      items: [
+        {
+          productId: iced.id,
+          quantity: 1,
+          selectedModifierOptionIds: [
+            optionId(iced, 'Size', 'Medium'),
+            optionId(iced, 'Milk', 'Whole Milk'),
+            optionId(iced, 'Espresso Shots', 'Double'),
+          ],
+        },
+      ],
+      // 525 base + 0 (Medium) + 0 (Whole Milk) + 100 (Double) = 625
+      subtotalCents: 625,
+      taxCents: 55, // 625 * 0.08875 = 55.46875 -> 55
+      totalCents: 680,
+      clientTicketId,
+      ...(placedAt ? { placedAt } : {}),
+    };
+  };
+
+  it('replaying a queued sale returns the original ticket, not a duplicate', async () => {
+    const key = '11111111-1111-4111-8111-111111111111';
+
+    const first = await app.inject({ method: 'POST', url: '/tickets', payload: offlineSale(key) });
+    expect(first.statusCode).toBe(201);
+    const original = first.json<TicketDto>();
+
+    const replay = await app.inject({ method: 'POST', url: '/tickets', payload: offlineSale(key) });
+    const replayed = replay.json<TicketDto>();
+
+    expect(replayed.id).toBe(original.id);
+    expect(replayed.clientTicketId).toBe(key);
+
+    const { rows } = await pool.query(
+      'SELECT count(*)::int AS n FROM tickets WHERE client_ticket_id = $1',
+      [key],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it('two concurrent syncs of one sale still produce exactly one ticket', async () => {
+    const key = '22222222-2222-4222-8222-222222222222';
+    const results = await Promise.all([
+      app.inject({ method: 'POST', url: '/tickets', payload: offlineSale(key) }),
+      app.inject({ method: 'POST', url: '/tickets', payload: offlineSale(key) }),
+      app.inject({ method: 'POST', url: '/tickets', payload: offlineSale(key) }),
+    ]);
+
+    for (const r of results) expect(r.statusCode).toBe(201);
+    const ids = new Set(results.map((r) => r.json<TicketDto>().id));
+    expect(ids.size).toBe(1);
+
+    const { rows } = await pool.query(
+      'SELECT count(*)::int AS n FROM tickets WHERE client_ticket_id = $1',
+      [key],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it('records when the sale happened on the device, not when it reached us', async () => {
+    const key = '33333333-3333-4333-8333-333333333333';
+    const placedAt = '2026-10-14T09:15:00.000Z';
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/tickets',
+      payload: offlineSale(key, placedAt),
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(new Date(response.json<TicketDto>().createdAt).toISOString()).toBe(placedAt);
+  });
+
+  it('replaying the identical payment returns the receipt instead of 409', async () => {
+    const key = '44444444-4444-4444-8444-444444444444';
+    const created = await app.inject({ method: 'POST', url: '/tickets', payload: offlineSale(key) });
+    const ticketId = created.json<TicketDto>().id;
+    const payment = { paymentMethod: 'cash', amountTenderedCents: 1000 };
+
+    const first = await app.inject({ method: 'POST', url: `/tickets/${ticketId}/pay`, payload: payment });
+    expect(first.statusCode).toBe(200);
+
+    const replay = await app.inject({ method: 'POST', url: `/tickets/${ticketId}/pay`, payload: payment });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json<TicketDto>()).toMatchObject({
+      id: ticketId,
+      status: 'paid',
+      amountTenderedCents: 1000,
+      changeDueCents: 1000 - 680,
+    });
+  });
+
+  it('still rejects a second payment for a different amount', async () => {
+    const key = '55555555-5555-4555-8555-555555555555';
+    const created = await app.inject({ method: 'POST', url: '/tickets', payload: offlineSale(key) });
+    const ticketId = created.json<TicketDto>().id;
+
+    const first = await app.inject({
+      method: 'POST',
+      url: `/tickets/${ticketId}/pay`,
+      payload: { paymentMethod: 'cash', amountTenderedCents: 1000 },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const different = await app.inject({
+      method: 'POST',
+      url: `/tickets/${ticketId}/pay`,
+      payload: { paymentMethod: 'cash', amountTenderedCents: 2000 },
+    });
+    expect(different.statusCode).toBe(409);
+    expect(different.json().code).toBe('TICKET_NOT_OPEN');
+  });
+
+  it('an online ticket carries no idempotency key and never collides', async () => {
+    const iced = findProduct('Iced Coffee');
+    const payload = {
+      items: [
+        { productId: iced.id, quantity: 2, selectedModifierOptionIds: [optionId(iced, 'Size', 'Medium')] },
+      ],
+      subtotalCents: 900,
+      taxCents: 80,
+      totalCents: 980,
+    };
+    const a = await app.inject({ method: 'POST', url: '/tickets', payload });
+    const b = await app.inject({ method: 'POST', url: '/tickets', payload });
+
+    expect(a.statusCode).toBe(201);
+    expect(b.statusCode).toBe(201);
+    expect(a.json<TicketDto>().id).not.toBe(b.json<TicketDto>().id);
+    expect(a.json<TicketDto>().clientTicketId).toBeNull();
   });
 });
 

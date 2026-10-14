@@ -1,6 +1,11 @@
 import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db/client.js';
-import { createTicket, getTicketById, listTickets, payTicket } from '../services/tickets.js';
+import {
+  createTicketIdempotent,
+  getTicketById,
+  listTickets,
+  payTicket,
+} from '../services/tickets.js';
 import {
   CreateTicketBodySchema,
   ListTicketsQuerySchema,
@@ -14,7 +19,7 @@ export const ticketRoutes: FastifyPluginAsync<{ db: Database }> = async (app, op
 
   app.post('/tickets', async (request, reply) => {
     const body = parseOrThrow(CreateTicketBodySchema, request.body, 'ticket');
-    const ticket = await createTicket(db, body);
+    const ticket = await createTicketIdempotent(db, body);
     return reply.status(201).send(ticket);
   });
 

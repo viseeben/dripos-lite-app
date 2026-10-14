@@ -20,6 +20,14 @@ export const CreateTicketBodySchema = z.object({
   subtotalCents: centsNonNegative,
   taxCents: centsNonNegative,
   totalCents: centsNonNegative,
+  /**
+   * Idempotency key minted on the device. Required for sales taken offline and
+   * replayed later: resending the same key returns the original ticket rather
+   * than creating a second one.
+   */
+  clientTicketId: uuid.optional(),
+  /** ISO timestamp of when the sale actually happened on the device. */
+  placedAt: z.iso.datetime().optional(),
 });
 
 export const PaymentMethodSchema = z.enum(['cash', 'card', 'gift_card', 'other']);
@@ -92,6 +100,8 @@ export type TicketDto = {
   amountTenderedCents: number | null;
   changeDueCents: number | null;
   createdAt: string;
+  /** Echoed back so a syncing device can match a ticket to its queued sale. */
+  clientTicketId: string | null;
   items: TicketItemDto[];
 }
 

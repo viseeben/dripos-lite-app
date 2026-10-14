@@ -25,7 +25,9 @@ const TICKET_SELECT = sql`
     t.payment_method         AS "paymentMethod",
     t.amount_tendered_cents  AS "amountTenderedCents",
     t.change_due_cents       AS "changeDueCents",
-    t.created_at             AS "createdAt",
+    t.client_ticket_id       AS "clientTicketId",
+    -- A sale taken offline happened before it reached us; show when it happened.
+    COALESCE(t.placed_at, t.created_at) AS "createdAt",
     COALESCE(it.items, '[]'::json) AS items
   FROM tickets t
   LEFT JOIN LATERAL (
@@ -62,6 +64,31 @@ function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
+/**
+ * Postgres unique-violation (23505). Two devices syncing the same sale race here.
+ * Drizzle wraps driver errors in DrizzleQueryError, so the pg code sits on
+ * `.cause` rather than the error itself; walk the chain rather than assume depth.
+ */
+function isUniqueViolation(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; current != null && depth < 5; depth += 1) {
+    if (typeof current === 'object' && (current as { code?: unknown }).code === '23505') return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+async function findByClientTicketId(
+  db: Database,
+  clientTicketId: string,
+): Promise<TicketDto | undefined> {
+  const result = await db.execute<TicketRow>(
+    sql`${TICKET_SELECT} WHERE t.client_ticket_id = ${clientTicketId}`,
+  );
+  const row = result.rows[0];
+  return row ? { ...row, createdAt: toIso(row.createdAt) } : undefined;
+}
+
 export async function getTicketById(db: Database, id: string): Promise<TicketDto> {
   const result = await db.execute<TicketRow>(sql`${TICKET_SELECT} WHERE t.id = ${id}`);
   const row = result.rows[0];
@@ -70,6 +97,13 @@ export async function getTicketById(db: Database, id: string): Promise<TicketDto
 }
 
 export async function createTicket(db: Database, body: CreateTicketBody): Promise<TicketDto> {
+  // A device replaying a sale it took offline resends its key. Return the
+  // original ticket rather than charging the customer a second time.
+  if (body.clientTicketId) {
+    const existing = await findByClientTicketId(db, body.clientTicketId);
+    if (existing) return existing;
+  }
+
   const computed = await recomputeTicket(db, body.items);
   assertTotalsMatch(computed, body);
 
@@ -81,6 +115,8 @@ export async function createTicket(db: Database, body: CreateTicketBody): Promis
         subtotalCents: computed.subtotalCents,
         taxCents: computed.taxCents,
         totalCents: computed.totalCents,
+        clientTicketId: body.clientTicketId ?? null,
+        placedAt: body.placedAt ? new Date(body.placedAt) : null,
       })
       .returning({ id: tickets.id });
 
@@ -128,6 +164,22 @@ export async function createTicket(db: Database, body: CreateTicketBody): Promis
   return getTicketById(db, ticketId);
 }
 
+/** Wraps createTicket so two concurrent syncs of one sale both see one ticket. */
+export async function createTicketIdempotent(
+  db: Database,
+  body: CreateTicketBody,
+): Promise<TicketDto> {
+  try {
+    return await createTicket(db, body);
+  } catch (err) {
+    if (body.clientTicketId && isUniqueViolation(err)) {
+      const winner = await findByClientTicketId(db, body.clientTicketId);
+      if (winner) return winner;
+    }
+    throw err;
+  }
+}
+
 export async function payTicket(
   db: Database,
   id: string,
@@ -141,11 +193,37 @@ export async function payTicket(
     );
   }
 
-  const existing = await db.execute<{ status: string; totalCents: number }>(sql`
-    SELECT status, total_cents AS "totalCents" FROM tickets WHERE id = ${id}
+  const existing = await db.execute<{
+    status: string;
+    totalCents: number;
+    paymentMethod: string | null;
+    amountTenderedCents: number | null;
+  }>(sql`
+    SELECT status,
+           total_cents           AS "totalCents",
+           payment_method        AS "paymentMethod",
+           amount_tendered_cents AS "amountTenderedCents"
+      FROM tickets
+     WHERE id = ${id}
   `);
   const ticket = existing.rows[0];
   if (!ticket) throw notFound('TICKET_NOT_FOUND', `Ticket ${id} not found`, { ticketId: id });
+
+  if (ticket.status === 'paid') {
+    // Idempotent replay: a device re-sending the payment it already recorded
+    // offline must get the receipt back, not a conflict. Differing amounts are
+    // a genuine conflict and still rejected.
+    if (
+      ticket.paymentMethod === body.paymentMethod &&
+      ticket.amountTenderedCents === body.amountTenderedCents
+    ) {
+      return getTicketById(db, id);
+    }
+    throw conflict('TICKET_NOT_OPEN', 'Ticket is already paid with a different amount', {
+      ticketId: id,
+      status: ticket.status,
+    });
+  }
 
   if (ticket.status !== 'open') {
     throw conflict('TICKET_NOT_OPEN', `Ticket is already ${ticket.status}`, {
@@ -192,7 +270,7 @@ export async function listTickets(
       t.id,
       t.status,
       t.total_cents AS "totalCents",
-      t.created_at  AS "createdAt",
+      COALESCE(t.placed_at, t.created_at) AS "createdAt",
       COALESCE(ic.item_count, 0)::int AS "itemCount",
       count(*) OVER()::int            AS "totalCount"
     FROM tickets t
@@ -201,7 +279,7 @@ export async function listTickets(
       FROM ticket_items ti
       WHERE ti.ticket_id = t.id
     ) ic ON TRUE
-    ORDER BY t.created_at DESC, t.id DESC
+    ORDER BY COALESCE(t.placed_at, t.created_at) DESC, t.id DESC
     LIMIT ${limit} OFFSET ${offset}
   `);
 

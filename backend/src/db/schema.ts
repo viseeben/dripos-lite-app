@@ -66,6 +66,10 @@ export const tickets = pgTable('tickets', {
   amountTenderedCents: integer('amount_tendered_cents'),
   changeDueCents: integer('change_due_cents'),
   paidAt: timestamp('paid_at', { withTimezone: true }),
+  /** Device-minted idempotency key for sales taken offline. */
+  clientTicketId: uuid('client_ticket_id'),
+  /** When the sale happened on the device, which may predate arrival here. */
+  placedAt: timestamp('placed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
