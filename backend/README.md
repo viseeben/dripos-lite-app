@@ -157,6 +157,13 @@ Returns `{ tickets, total }`.
 ### `GET /tickets/:id` → `200`
 Full ticket with items and their selected modifiers.
 
+### `GET /admin/diagnostics` → `200`
+Open this in a browser after deploying. Reports row counts, whether the menu is
+ready, and how the last seed went — enough to tell "never seeded" apart from "the
+mock API returned a shape the seed did not expect", without reading deploy logs.
+Returns counts and a redacted error only; it reports *whether* `ADMIN_TOKEN` and
+`MOCK_API_URL` are configured, never their values.
+
 ### `POST /admin/seed` → `200`
 Re-imports the catalog. Idempotent. Requires `Authorization: Bearer $ADMIN_TOKEN`
 whenever `ADMIN_TOKEN` is set, and is disabled outright in production when it isn't.

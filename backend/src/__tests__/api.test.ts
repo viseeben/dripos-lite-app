@@ -446,6 +446,28 @@ describe('GET /tickets/:id', () => {
   });
 });
 
+describe('GET /admin/diagnostics', () => {
+  it('reports catalog counts and whether the menu is ready', async () => {
+    const response = await app.inject({ method: 'GET', url: '/admin/diagnostics' });
+    expect(response.statusCode).toBe(200);
+
+    const body = response.json();
+    expect(body.menuReady).toBe(true);
+    expect(body.catalog.products).toBeGreaterThan(0);
+    expect(body.catalog.modifierOptions).toBeGreaterThan(0);
+    expect(body.mockApiConfigured).toBe(typeof process.env['MOCK_API_URL'] === 'string');
+  });
+
+  it('never exposes the admin token or the mock API URL', async () => {
+    const response = await app.inject({ method: 'GET', url: '/admin/diagnostics' });
+    const raw = response.body;
+    expect(raw).not.toContain('MOCK_API_URL=');
+    expect(response.json().adminTokenConfigured).toBeTypeOf('boolean');
+    // The flags say whether they are configured, never what they are.
+    expect(raw).not.toMatch(/https?:\/\//);
+  });
+});
+
 describe('unknown routes', () => {
   it('404s with the standard error envelope', async () => {
     const response = await app.inject({ method: 'GET', url: '/nope' });

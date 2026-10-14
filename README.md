@@ -101,6 +101,12 @@ must carry a complete, self-consistent payment record.
 
 ---
 
+## After deploying
+
+Open `https://<your-backend>/admin/diagnostics` in a browser. It reports how many
+products are loaded and how the last catalog import went, so an empty menu is
+immediately explainable without digging through deploy logs.
+
 ## Verify it yourself
 
 ```bash

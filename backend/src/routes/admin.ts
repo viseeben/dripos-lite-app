@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import type { Database } from '../db/client.js';
 import type { Env } from '../config/env.js';
 import { seed } from '../services/seed.js';
+import { getSeedState, recordSeedFailure, recordSeedSuccess } from '../services/seed-state.js';
+import { sql } from 'drizzle-orm';
 import { HttpError } from '../utils/errors.js';
 
 export const adminRoutes: FastifyPluginAsync<{ db: Database; env: Env }> = async (app, opts) => {
@@ -39,7 +41,52 @@ export const adminRoutes: FastifyPluginAsync<{ db: Database; env: Env }> = async
       );
     }
 
-    const counts = await seed(db, env.MOCK_API_URL, (msg) => app.log.info(msg));
-    return reply.status(200).send(counts);
+    try {
+      const counts = await seed(db, env.MOCK_API_URL, (msg) => app.log.info(msg));
+      recordSeedSuccess(counts);
+      return reply.status(200).send(counts);
+    } catch (err) {
+      recordSeedFailure(err, env.MOCK_API_URL);
+      throw err;
+    }
+  });
+
+  /**
+   * Plain GET so it can be opened in a browser. Reports what is actually in the
+   * database and how the last seed went, which is enough to tell an empty menu
+   * caused by "never seeded" apart from one caused by a mock API shape change.
+   * Returns counts and a redacted error only — never credentials.
+   */
+  app.get('/admin/diagnostics', async () => {
+    const counts = await db.execute<{
+      products: number;
+      modifierGroups: number;
+      modifierOptions: number;
+      tickets: number;
+    }>(sql`
+      SELECT
+        (SELECT count(*)::int FROM products)          AS "products",
+        (SELECT count(*)::int FROM modifier_groups)   AS "modifierGroups",
+        (SELECT count(*)::int FROM modifier_options)  AS "modifierOptions",
+        (SELECT count(*)::int FROM tickets)           AS "tickets"
+    `);
+
+    const catalog = counts.rows[0] ?? {
+      products: 0,
+      modifierGroups: 0,
+      modifierOptions: 0,
+      tickets: 0,
+    };
+
+    return {
+      ok: true,
+      environment: env.NODE_ENV,
+      mockApiConfigured: Boolean(env.MOCK_API_URL),
+      adminTokenConfigured: Boolean(env.ADMIN_TOKEN),
+      seedOnStart: env.SEED_ON_START,
+      catalog,
+      menuReady: catalog.products > 0,
+      lastSeed: getSeedState() ?? null,
+    };
   });
 };
