@@ -195,6 +195,13 @@ whenever `ADMIN_TOKEN` is set, and is disabled outright in production when it is
    - `ADMIN_TOKEN` = any long random string
 4. Deploy. [`railway.json`](railway.json) supplies the build and start commands and
    points the healthcheck at `/health`.
+
+   > The build command is `npm install --include=dev`, not `npm ci`, on purpose.
+   > Nixpacks has already run its own install by the time the build command runs,
+   > and a second `npm ci` wipes `node_modules` — which fails with `EBUSY` because
+   > Railway mounts a cache directory inside it. `npm install` adds to the existing
+   > tree instead of replacing it. `--include=dev` is needed because `NODE_ENV=production`
+   > makes npm skip devDependencies, and TypeScript is one.
 5. Generate a public domain, then seed once:
 
 ```bash
