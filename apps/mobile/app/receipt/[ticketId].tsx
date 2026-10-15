@@ -77,11 +77,31 @@ export default function ReceiptScreen() {
           <Row label="Tax (8.875%)" value={formatCents(ticket.taxCents)} />
           <Row label="Total" value={formatCents(ticket.totalCents)} emphasis />
 
-          {ticket.amountTenderedCents !== null ? (
+          {ticket.payments.length > 0 ? (
             <>
               <Divider />
-              <Row label="Cash Tendered" value={formatCents(ticket.amountTenderedCents)} />
-              {ticket.changeDueCents !== null ? (
+              {ticket.payments.length === 1 ? (
+                <Row
+                  label="Cash Tendered"
+                  value={formatCents(ticket.payments[0]?.amountTenderedCents ?? 0)}
+                />
+              ) : (
+                <>
+                  {/* A split bill: each person's cash is its own line. */}
+                  {ticket.payments.map((payment, index) => (
+                    <Row
+                      key={payment.id}
+                      label={`Cash ${index + 1} of ${ticket.payments.length}`}
+                      value={formatCents(payment.amountTenderedCents)}
+                    />
+                  ))}
+                  <Row
+                    label="Total Tendered"
+                    value={formatCents(ticket.amountTenderedCents ?? 0)}
+                  />
+                </>
+              )}
+              {ticket.changeDueCents !== null && ticket.changeDueCents > 0 ? (
                 <Row label="Change Due" value={formatCents(ticket.changeDueCents)} emphasis />
               ) : null}
             </>

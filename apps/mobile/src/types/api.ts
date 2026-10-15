@@ -23,6 +23,16 @@ export interface Product {
   modifierGroups: ModifierGroup[];
 }
 
+export interface TicketPayment {
+  id: string;
+  sequence: number;
+  paymentMethod: PaymentMethod;
+  amountTenderedCents: number;
+  amountAppliedCents: number;
+  changeDueCents: number;
+  createdAt: string;
+}
+
 export interface TicketItemModifier {
   name: string;
   groupName: string;
@@ -51,6 +61,10 @@ export interface Ticket {
   createdAt: string;
   /** Present on sales that originated offline; lets a device match its queue. */
   clientTicketId: string | null;
+  /** Every tender taken against this ticket, in order. */
+  payments: TicketPayment[];
+  amountPaidCents: number;
+  amountRemainingCents: number;
   items: TicketItem[];
 }
 
@@ -85,4 +99,6 @@ export interface CreateTicketRequest {
 export interface PayTicketRequest {
   paymentMethod: PaymentMethod;
   amountTenderedCents: number;
+  /** Idempotency key for this tender. Two identical tenders are legitimate. */
+  clientPaymentId?: string;
 }

@@ -141,24 +141,40 @@ the insert runs in a single transaction.
 
 ### `POST /tickets/:id/pay` → `200`
 
+Records **one tender**. A ticket may take several.
+
 ```json
-{ "paymentMethod": "cash", "amountTenderedCents": 1000 }
+{ "paymentMethod": "cash", "amountTenderedCents": 500, "clientPaymentId": "uuid" }
 ```
 
-Returns the ticket with `status: "paid"` and `changeDueCents`.
+A tender smaller than the balance is a partial payment, not an error: it is
+applied in full, the ticket stays `open`, and the remainder is still owed. A
+tender that covers the balance settles the ticket and the excess is change — so
+only the final tender in a split can produce any.
+
+Returns the ticket with `payments[]`, `amountPaidCents` and
+`amountRemainingCents`. The ticket's own `amountTenderedCents` and
+`changeDueCents` remain a faithful summary across every tender.
+
+`clientPaymentId` is the idempotency key for that tender. **Dedup is by key
+only, never by amount**: two people each handing over $5 is an ordinary split,
+and matching on amounts would silently swallow one. Omitting the key means every
+call records a new tender.
+
+Concurrent tenders are serialised by locking the ticket row, so they cannot both
+read the same balance and overpay it.
 
 | Code | Status | Cause |
 |---|---|---|
 | `UNSUPPORTED_PAYMENT_METHOD` | 400 | Only `cash` is implemented |
 | `TICKET_NOT_FOUND` | 404 | No such ticket |
-| `TICKET_NOT_OPEN` | 409 | Already paid with a *different* amount, or voided |
-| `INSUFFICIENT_TENDER` | 422 | Tendered less than the total |
+| `TICKET_NOT_OPEN` | 409 | Ticket is void |
+| `TICKET_ALREADY_PAID` | 409 | Nothing left to pay |
+| `PAYMENT_KEY_REUSED` | 409 | That tender key belongs to another ticket |
 
-Payment is an atomic compare-and-set (`UPDATE ... WHERE status = 'open'`), so two
-conflicting concurrent requests cannot both succeed. Replaying the *identical*
-payment is deliberately not a conflict: a retried request is indistinguishable
-from the original, and a till syncing an offline sale will retry, so it returns
-the receipt. A different amount is a genuine conflict and is rejected.
+Tenders are applied under a row lock on the ticket, so concurrent payments are
+serialised and the balance can never be overpaid. Replaying a tender by its key
+returns the current state without recording it twice.
 
 ### `GET /tickets?limit=50&offset=0` → `200`
 Newest first. `limit` defaults to 50, caps at 100. `itemCount` is the summed quantity.

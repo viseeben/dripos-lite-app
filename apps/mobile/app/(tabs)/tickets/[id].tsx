@@ -74,15 +74,53 @@ export default function TicketDetailScreen() {
         />
       </View>
 
-      {ticket.paymentMethod ? (
+      {ticket.payments.length > 0 ? (
         <View style={styles.card}>
-          <Text style={styles.sectionLabel}>Payment</Text>
-          <DetailRow label="Method" value={PAYMENT_LABELS[ticket.paymentMethod] ?? ticket.paymentMethod} />
-          {ticket.amountTenderedCents !== null ? (
-            <DetailRow label="Tendered" value={formatCents(ticket.amountTenderedCents)} />
+          <Text style={styles.sectionLabel}>
+            {ticket.payments.length > 1
+              ? `Payments (${ticket.payments.length})`
+              : 'Payment'}
+          </Text>
+
+          {ticket.payments.map((payment, index) => (
+            <View key={payment.id} style={styles.item}>
+              <View style={styles.itemHeader}>
+                <Text style={styles.itemName}>
+                  {ticket.payments.length > 1 ? `Payment ${index + 1} · ` : ''}
+                  {PAYMENT_LABELS[payment.paymentMethod] ?? payment.paymentMethod}
+                </Text>
+                <Text style={styles.itemAmount}>{formatCents(payment.amountTenderedCents)}</Text>
+              </View>
+              <View style={styles.modifierRow}>
+                <Text style={styles.modifierName}>Applied to balance</Text>
+                <Text style={styles.modifierDelta}>
+                  {formatCents(payment.amountAppliedCents)}
+                </Text>
+              </View>
+              {payment.changeDueCents > 0 ? (
+                <View style={styles.modifierRow}>
+                  <Text style={styles.modifierName}>Change returned</Text>
+                  <Text style={styles.modifierDelta}>{formatCents(payment.changeDueCents)}</Text>
+                </View>
+              ) : null}
+            </View>
+          ))}
+
+          {ticket.payments.length > 1 ? (
+            <>
+              <DetailRow
+                label="Total tendered"
+                value={formatCents(ticket.amountTenderedCents ?? 0)}
+              />
+              <DetailRow label="Change due" value={formatCents(ticket.changeDueCents ?? 0)} />
+            </>
           ) : null}
-          {ticket.changeDueCents !== null ? (
-            <DetailRow label="Change due" value={formatCents(ticket.changeDueCents)} />
+
+          {ticket.amountRemainingCents > 0 ? (
+            <DetailRow
+              label="Still owed"
+              value={formatCents(ticket.amountRemainingCents)}
+            />
           ) : null}
         </View>
       ) : null}

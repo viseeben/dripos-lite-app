@@ -104,6 +104,21 @@ export const ticketItemModifiers = pgTable('ticket_item_modifiers', {
   sortOrder: integer('sort_order').notNull().default(0),
 });
 
+export const ticketPayments = pgTable('ticket_payments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ticketId: uuid('ticket_id')
+    .notNull()
+    .references(() => tickets.id, { onDelete: 'cascade' }),
+  /** Device-minted idempotency key; two identical tenders are legitimate. */
+  clientPaymentId: uuid('client_payment_id'),
+  sequence: integer('sequence').notNull(),
+  paymentMethod: paymentMethodEnum('payment_method').notNull(),
+  amountTenderedCents: integer('amount_tendered_cents').notNull(),
+  amountAppliedCents: integer('amount_applied_cents').notNull(),
+  changeDueCents: integer('change_due_cents').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const schema = {
   products,
   modifierGroups,
@@ -112,4 +127,5 @@ export const schema = {
   tickets,
   ticketItems,
   ticketItemModifiers,
+  ticketPayments,
 };

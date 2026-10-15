@@ -70,11 +70,20 @@ async function syncOne(queued: QueuedTicket): Promise<void> {
     placedAt: queued.placedAt,
   });
 
-  // A previous attempt may have died after paying; the server already knows.
-  if (ticket.status !== 'paid') {
+  // Already fully settled with every tender recorded: nothing left to send.
+  if (ticket.status === 'paid' && ticket.payments.length >= queued.tenders.length) {
+    useQueueStore.getState().markSynced(queued.clientTicketId, ticket.id);
+    return;
+  }
+
+  // Each tender is its own payment, replayed under its own key. A tender a
+  // previous attempt already recorded is recognised by that key and skipped
+  // server-side, so re-sending the whole set is safe.
+  for (const tender of queued.tenders) {
     await api.payTicket(ticket.id, {
       paymentMethod: 'cash',
-      amountTenderedCents: queued.amountTenderedCents,
+      amountTenderedCents: tender.amountTenderedCents,
+      clientPaymentId: tender.clientPaymentId,
     });
   }
 

@@ -34,7 +34,15 @@ export const PaymentMethodSchema = z.enum(['cash', 'card', 'gift_card', 'other']
 
 export const PayTicketBodySchema = z.object({
   paymentMethod: PaymentMethodSchema,
-  amountTenderedCents: centsNonNegative,
+  amountTenderedCents: z.number().int().min(1).max(2_147_483_647),
+  /**
+   * Idempotency key for this tender, minted on the device.
+   *
+   * Split tender makes two identical cash tenders entirely normal, so a replay
+   * can only be told apart from a genuine second payment by key. Omitting it
+   * forfeits replay safety: every call then records a new tender.
+   */
+  clientPaymentId: uuid.optional(),
 });
 
 export const TicketIdParamsSchema = z.object({ id: uuid });
@@ -74,6 +82,18 @@ export type ProductDto = {
   modifierGroups: ModifierGroupDto[];
 }
 
+export type TicketPaymentDto = {
+  id: string;
+  sequence: number;
+  paymentMethod: PaymentMethod;
+  /** What the customer handed over for this tender. */
+  amountTenderedCents: number;
+  /** How much of it went against the balance; the remainder is change. */
+  amountAppliedCents: number;
+  changeDueCents: number;
+  createdAt: string;
+};
+
 export type TicketItemModifierDto = {
   name: string;
   groupName: string;
@@ -102,6 +122,12 @@ export type TicketDto = {
   createdAt: string;
   /** Echoed back so a syncing device can match a ticket to its queued sale. */
   clientTicketId: string | null;
+  /** Every tender taken against this ticket, in the order they were taken. */
+  payments: TicketPaymentDto[];
+  /** Sum applied to the balance across all tenders. */
+  amountPaidCents: number;
+  /** Still owed. Zero once the ticket is paid. */
+  amountRemainingCents: number;
   items: TicketItemDto[];
 }
 

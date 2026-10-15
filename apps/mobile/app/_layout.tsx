@@ -87,7 +87,8 @@ export default function RootLayout() {
               name="product/[id]"
               options={{ presentation: 'modal', headerShown: false }}
             />
-            <Stack.Screen name="checkout" options={{ title: 'Checkout' }} />
+            <Stack.Screen name="checkout/index" options={{ title: 'Checkout' }} />
+            <Stack.Screen name="checkout/tender" options={{ title: 'Cash Payment' }} />
             <Stack.Screen
               name="receipt/[ticketId]"
               options={{ title: 'Receipt', headerBackVisible: false, gestureEnabled: false }}

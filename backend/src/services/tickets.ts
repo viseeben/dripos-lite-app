@@ -1,9 +1,10 @@
 /** Ticket writes and reads. */
 import { sql } from 'drizzle-orm';
 import type { Database } from '../db/client.js';
-import { ticketItemModifiers, ticketItems, tickets } from '../db/schema.js';
+import { ticketItemModifiers, ticketItems, ticketPayments, tickets } from '../db/schema.js';
 import { assertTotalsMatch, recomputeTicket } from './pricing.js';
-import { badRequest, conflict, notFound, unprocessable } from '../utils/errors.js';
+import { applyTenderCents } from '../utils/money.js';
+import { badRequest, conflict, notFound } from '../utils/errors.js';
 import type {
   CreateTicketBody,
   ListTicketsResponse,
@@ -26,10 +27,31 @@ const TICKET_SELECT = sql`
     t.amount_tendered_cents  AS "amountTenderedCents",
     t.change_due_cents       AS "changeDueCents",
     t.client_ticket_id       AS "clientTicketId",
+    COALESCE(pay.payments, '[]'::json)              AS payments,
+    COALESCE(pay.applied, 0)::int                   AS "amountPaidCents",
+    (t.total_cents - COALESCE(pay.applied, 0))::int AS "amountRemainingCents",
     -- A sale taken offline happened before it reached us; show when it happened.
     COALESCE(t.placed_at, t.created_at) AS "createdAt",
     COALESCE(it.items, '[]'::json) AS items
   FROM tickets t
+  LEFT JOIN LATERAL (
+    SELECT
+      json_agg(
+        json_build_object(
+          'id',                  tp.id,
+          'sequence',            tp.sequence,
+          'paymentMethod',       tp.payment_method,
+          'amountTenderedCents', tp.amount_tendered_cents,
+          'amountAppliedCents',  tp.amount_applied_cents,
+          'changeDueCents',      tp.change_due_cents,
+          'createdAt', to_char(tp.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        )
+        ORDER BY tp.sequence
+      ) AS payments,
+      SUM(tp.amount_applied_cents) AS applied
+    FROM ticket_payments tp
+    WHERE tp.ticket_id = t.id
+  ) pay ON TRUE
   LEFT JOIN LATERAL (
     SELECT json_agg(
              json_build_object(
@@ -180,6 +202,14 @@ export async function createTicketIdempotent(
   }
 }
 
+/**
+ * Records one tender against a ticket.
+ *
+ * A tender smaller than the balance is a partial payment, not an error: the
+ * ticket stays open and the remainder is still owed. A tender larger than the
+ * balance settles it and the excess is change. Only the final tender can
+ * produce change, because earlier ones are applied in full.
+ */
 export async function payTicket(
   db: Database,
   id: string,
@@ -193,68 +223,95 @@ export async function payTicket(
     );
   }
 
-  const existing = await db.execute<{
-    status: string;
-    totalCents: number;
-    paymentMethod: string | null;
-    amountTenderedCents: number | null;
-  }>(sql`
-    SELECT status,
-           total_cents           AS "totalCents",
-           payment_method        AS "paymentMethod",
-           amount_tendered_cents AS "amountTenderedCents"
-      FROM tickets
-     WHERE id = ${id}
-  `);
-  const ticket = existing.rows[0];
-  if (!ticket) throw notFound('TICKET_NOT_FOUND', `Ticket ${id} not found`, { ticketId: id });
-
-  if (ticket.status === 'paid') {
-    // Idempotent replay: a device re-sending the payment it already recorded
-    // offline must get the receipt back, not a conflict. Differing amounts are
-    // a genuine conflict and still rejected.
-    if (
-      ticket.paymentMethod === body.paymentMethod &&
-      ticket.amountTenderedCents === body.amountTenderedCents
-    ) {
+  // Replay detection is by key only. Two identical cash tenders are an ordinary
+  // way to split a bill, so matching on amounts would silently swallow one.
+  if (body.clientPaymentId) {
+    const seen = await db.execute<{ ticketId: string }>(sql`
+      SELECT ticket_id AS "ticketId"
+        FROM ticket_payments
+       WHERE client_payment_id = ${body.clientPaymentId}
+    `);
+    const row = seen.rows[0];
+    if (row) {
+      if (row.ticketId !== id) {
+        throw conflict('PAYMENT_KEY_REUSED', 'That payment key belongs to another ticket', {
+          ticketId: id,
+        });
+      }
       return getTicketById(db, id);
     }
-    throw conflict('TICKET_NOT_OPEN', 'Ticket is already paid with a different amount', {
-      ticketId: id,
-      status: ticket.status,
-    });
   }
 
-  if (ticket.status !== 'open') {
-    throw conflict('TICKET_NOT_OPEN', `Ticket is already ${ticket.status}`, {
-      ticketId: id,
-      status: ticket.status,
+  try {
+    await db.transaction(async (tx) => {
+      // Lock the ticket so two tenders arriving together are applied in series
+      // and cannot both read the same remaining balance.
+      const locked = await tx.execute<{ status: string; totalCents: number }>(sql`
+        SELECT status, total_cents AS "totalCents" FROM tickets WHERE id = ${id} FOR UPDATE
+      `);
+      const ticket = locked.rows[0];
+      if (!ticket) throw notFound('TICKET_NOT_FOUND', `Ticket ${id} not found`, { ticketId: id });
+      if (ticket.status === 'void') {
+        throw conflict('TICKET_NOT_OPEN', 'Ticket is void', { ticketId: id, status: ticket.status });
+      }
+
+      const priorRows = await tx.execute<{
+        applied: number;
+        tendered: number;
+        change: number;
+        taken: number;
+      }>(sql`
+        SELECT
+          COALESCE(SUM(amount_applied_cents), 0)::int  AS applied,
+          COALESCE(SUM(amount_tendered_cents), 0)::int AS tendered,
+          COALESCE(SUM(change_due_cents), 0)::int      AS change,
+          COUNT(*)::int                                AS taken
+        FROM ticket_payments
+        WHERE ticket_id = ${id}
+      `);
+      const prior = priorRows.rows[0] ?? { applied: 0, tendered: 0, change: 0, taken: 0 };
+
+      const remaining = ticket.totalCents - prior.applied;
+      if (remaining <= 0) {
+        throw conflict('TICKET_ALREADY_PAID', 'Ticket is already paid in full', {
+          ticketId: id,
+          amountRemainingCents: 0,
+        });
+      }
+
+      const { amountAppliedCents: appliedCents, changeDueCents } = applyTenderCents(
+        remaining,
+        body.amountTenderedCents,
+      );
+      const stillOwed = remaining - appliedCents;
+
+      await tx.insert(ticketPayments).values({
+        ticketId: id,
+        clientPaymentId: body.clientPaymentId ?? null,
+        sequence: prior.taken + 1,
+        paymentMethod: 'cash',
+        amountTenderedCents: body.amountTenderedCents,
+        amountAppliedCents: appliedCents,
+        changeDueCents,
+      });
+
+      // The ticket's own payment columns stay a maintained summary across all
+      // tenders, which keeps the paid-ticket CHECK and old consumers correct.
+      await tx.execute(sql`
+        UPDATE tickets
+           SET payment_method        = 'cash',
+               amount_tendered_cents = ${prior.tendered + body.amountTenderedCents},
+               change_due_cents      = ${prior.change + changeDueCents},
+               status                = ${stillOwed === 0 ? 'paid' : 'open'}::ticket_status,
+               paid_at               = ${stillOwed === 0 ? sql`now()` : sql`NULL`}
+         WHERE id = ${id}
+      `);
     });
-  }
-
-  if (body.amountTenderedCents < ticket.totalCents) {
-    throw unprocessable('INSUFFICIENT_TENDER', 'Tendered amount does not cover total', {
-      totalCents: ticket.totalCents,
-      amountTenderedCents: body.amountTenderedCents,
-    });
-  }
-
-  const changeDueCents = body.amountTenderedCents - ticket.totalCents;
-
-  // Compare-and-set: two concurrent payments cannot both win.
-  const updated = await db.execute<{ id: string }>(sql`
-    UPDATE tickets
-       SET status                = 'paid',
-           payment_method        = ${body.paymentMethod},
-           amount_tendered_cents = ${body.amountTenderedCents},
-           change_due_cents      = ${changeDueCents},
-           paid_at               = now()
-     WHERE id = ${id} AND status = 'open'
-    RETURNING id
-  `);
-
-  if (updated.rows.length === 0) {
-    throw conflict('TICKET_NOT_OPEN', 'Ticket was already paid or voided', { ticketId: id });
+  } catch (err) {
+    // A concurrent replay of the same tender lost the unique-index race; the
+    // winner recorded it, so report the resulting state rather than an error.
+    if (body.clientPaymentId && isUniqueViolation(err)) return getTicketById(db, id);
+    throw err;
   }
 
   return getTicketById(db, id);

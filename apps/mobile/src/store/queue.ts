@@ -9,6 +9,7 @@
  */
 import { create } from 'zustand';
 import { StorageKeys, readJson, writeJson } from '../lib/storage';
+import { applyTenderCents } from '../lib/money';
 import type { Ticket } from '../types/api';
 
 export type QueuedStatus = 'pending' | 'syncing' | 'synced' | 'failed';
@@ -29,6 +30,13 @@ export interface QueuedItem {
   modifiers: QueuedModifier[];
 }
 
+/** One cash tender. A split bill produces several of these on one sale. */
+export interface QueuedTender {
+  /** Idempotency key for this tender specifically. */
+  clientPaymentId: string;
+  amountTenderedCents: number;
+}
+
 export interface QueuedTicket {
   /** Idempotency key. Minted once, persisted, never regenerated. */
   clientTicketId: string;
@@ -38,8 +46,8 @@ export interface QueuedTicket {
   subtotalCents: number;
   taxCents: number;
   totalCents: number;
-  amountTenderedCents: number;
-  changeDueCents: number;
+  /** Every tender taken for this sale, in the order the cashier took them. */
+  tenders: QueuedTender[];
   status: QueuedStatus;
   attempts: number;
   lastError?: string;
@@ -73,6 +81,59 @@ function persist(tickets: QueuedTicket[]): void {
   void writeJson(StorageKeys.offlineQueue, tickets);
 }
 
+/** A sale queued before split tender existed; one tender, recorded inline. */
+interface LegacyQueuedTicket extends Omit<QueuedTicket, 'tenders'> {
+  tenders?: QueuedTender[];
+  amountTenderedCents?: number;
+}
+
+/**
+ * Reads the queue, converting anything written before split tender into the
+ * current shape. An upgrade must never strand a sale that has not synced yet.
+ */
+async function loadQueue(): Promise<QueuedTicket[]> {
+  const current = await readJson<LegacyQueuedTicket[]>(StorageKeys.offlineQueue);
+  const legacy = current ?? (await readJson<LegacyQueuedTicket[]>(StorageKeys.offlineQueueV1));
+  if (!legacy) return [];
+
+  return legacy.map((ticket) => {
+    if (Array.isArray(ticket.tenders)) return ticket as QueuedTicket;
+    const { amountTenderedCents, ...rest } = ticket;
+    return {
+      ...(rest as Omit<QueuedTicket, 'tenders'>),
+      tenders: [
+        {
+          // Derived from the sale's own key, so it is stable across restarts.
+          clientPaymentId: `${ticket.clientTicketId}-1`,
+          amountTenderedCents: amountTenderedCents ?? 0,
+        },
+      ],
+    };
+  });
+}
+
+/** Totals derived from the tenders, mirroring how the server sums them. */
+export function tenderTotals(ticket: QueuedTicket): {
+  amountTenderedCents: number;
+  amountPaidCents: number;
+  changeDueCents: number;
+  amountRemainingCents: number;
+} {
+  let remaining = ticket.totalCents;
+  let changeDueCents = 0;
+  for (const tender of ticket.tenders) {
+    const split = applyTenderCents(remaining, tender.amountTenderedCents);
+    remaining -= split.amountAppliedCents;
+    changeDueCents += split.changeDueCents;
+  }
+  return {
+    amountTenderedCents: ticket.tenders.reduce((sum, t) => sum + t.amountTenderedCents, 0),
+    amountPaidCents: ticket.totalCents - remaining,
+    changeDueCents,
+    amountRemainingCents: remaining,
+  };
+}
+
 function prune(tickets: QueuedTicket[]): QueuedTicket[] {
   const synced = tickets.filter((t) => t.status === 'synced');
   if (synced.length <= SYNCED_HISTORY_LIMIT) return tickets;
@@ -103,7 +164,7 @@ export const useQueueStore = create<QueueState>()((set, get) => {
     hydrated: false,
 
     hydrate: async () => {
-      const saved = (await readJson<QueuedTicket[]>(StorageKeys.offlineQueue)) ?? [];
+      const saved = await loadQueue();
       // A sale left mid-sync by a crash or a force-quit must be retried, not
       // abandoned. Replaying it is safe: the server keys on clientTicketId.
       const recovered = saved.map((t) =>
@@ -165,15 +226,33 @@ export const useQueuedTicket = (clientTicketId: string | undefined): QueuedTicke
  * and ticket screens need no separate offline code path.
  */
 export function queuedTicketToTicket(queued: QueuedTicket): Ticket {
+  const totals = tenderTotals(queued);
+  let remaining = queued.totalCents;
+
   return {
     id: queued.clientTicketId,
-    status: 'paid',
+    status: totals.amountRemainingCents === 0 ? 'paid' : 'open',
     subtotalCents: queued.subtotalCents,
     taxCents: queued.taxCents,
     totalCents: queued.totalCents,
     paymentMethod: 'cash',
-    amountTenderedCents: queued.amountTenderedCents,
-    changeDueCents: queued.changeDueCents,
+    amountTenderedCents: totals.amountTenderedCents,
+    changeDueCents: totals.changeDueCents,
+    amountPaidCents: totals.amountPaidCents,
+    amountRemainingCents: totals.amountRemainingCents,
+    payments: queued.tenders.map((tender, index) => {
+      const split = applyTenderCents(remaining, tender.amountTenderedCents);
+      remaining -= split.amountAppliedCents;
+      return {
+        id: tender.clientPaymentId,
+        sequence: index + 1,
+        paymentMethod: 'cash' as const,
+        amountTenderedCents: tender.amountTenderedCents,
+        amountAppliedCents: split.amountAppliedCents,
+        changeDueCents: split.changeDueCents,
+        createdAt: queued.placedAt,
+      };
+    }),
     createdAt: queued.placedAt,
     clientTicketId: queued.clientTicketId,
     items: queued.items.map((item, index) => ({

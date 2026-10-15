@@ -8,7 +8,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export const StorageKeys = {
   menuCache: 'dripos.menu.v1',
-  offlineQueue: 'dripos.queue.v1',
+  offlineQueue: 'dripos.queue.v2',
+  /** Pre-split-tender queue, read once on upgrade and then left alone. */
+  offlineQueueV1: 'dripos.queue.v1',
+  /** In-progress split payment, so a crash mid-split keeps recorded tenders. */
+  paymentSession: 'dripos.payment-session.v1',
   settings: 'dripos.settings.v1',
 } as const;
 

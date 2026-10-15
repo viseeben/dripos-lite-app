@@ -29,6 +29,20 @@ export function computeSubtotalCents(lineTotals: readonly number[]): number {
   return lineTotals.reduce((sum, line) => sum + line, 0);
 }
 
+/**
+ * Splits a tender against an outstanding balance.
+ *
+ * Applied is capped by what is still owed, so an early tender in a split is
+ * consumed entirely and only the final one produces change.
+ */
+export function applyTenderCents(
+  remainingCents: number,
+  amountTenderedCents: number,
+): { amountAppliedCents: number; changeDueCents: number } {
+  const amountAppliedCents = Math.min(amountTenderedCents, remainingCents);
+  return { amountAppliedCents, changeDueCents: amountTenderedCents - amountAppliedCents };
+}
+
 /** Formats integer cents as "$X.XX". Negative values render as "-$X.XX". */
 export function formatCents(cents: number): string {
   const sign = cents < 0 ? '-' : '';

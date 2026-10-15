@@ -295,8 +295,7 @@ describe('POST /tickets', () => {
     expect(response.json().code).toBe('VALIDATION_ERROR');
   });
 });
-
-describe('POST /tickets/:id/pay', () => {
+describe('POST /tickets/:id/pay — split tender', () => {
   const openTicket = async (): Promise<TicketDto> => {
     const iced = findProduct('Iced Coffee');
     const response = await app.inject({
@@ -318,33 +317,173 @@ describe('POST /tickets/:id/pay', () => {
     return response.json<TicketDto>();
   };
 
-  it('pays with cash and returns the change due', async () => {
-    const ticket = await openTicket();
-    const response = await app.inject({
+  const tender = (ticketId: string, amountTenderedCents: number, clientPaymentId?: string) =>
+    app.inject({
       method: 'POST',
-      url: `/tickets/${ticket.id}/pay`,
-      payload: { paymentMethod: 'cash', amountTenderedCents: 1000 },
+      url: `/tickets/${ticketId}/pay`,
+      payload: { paymentMethod: 'cash', amountTenderedCents, ...(clientPaymentId ? { clientPaymentId } : {}) },
     });
+
+  it('settles a ticket in one tender, as before', async () => {
+    const ticket = await openTicket();
+    const response = await tender(ticket.id, 1000);
 
     expect(response.statusCode).toBe(200);
     expect(response.json<TicketDto>()).toMatchObject({
       status: 'paid',
-      paymentMethod: 'cash',
-      amountTenderedCents: 1000,
+      amountPaidCents: 980,
+      amountRemainingCents: 0,
       changeDueCents: 20,
+    });
+    expect(response.json<TicketDto>().payments).toHaveLength(1);
+  });
+
+  it('leaves the ticket open and owing when a tender is short', async () => {
+    const ticket = await openTicket();
+    const response = await tender(ticket.id, 500);
+
+    expect(response.statusCode).toBe(200);
+    const after = response.json<TicketDto>();
+    expect(after.status).toBe('open');
+    expect(after.amountPaidCents).toBe(500);
+    expect(after.amountRemainingCents).toBe(480);
+    // A partial tender is applied in full, so it yields no change.
+    expect(after.payments[0]).toMatchObject({
+      sequence: 1,
+      amountTenderedCents: 500,
+      amountAppliedCents: 500,
+      changeDueCents: 0,
     });
   });
 
-  it('rejects tender below the total', async () => {
+  it('records each tender separately and settles on the last one', async () => {
     const ticket = await openTicket();
-    const response = await app.inject({
-      method: 'POST',
-      url: `/tickets/${ticket.id}/pay`,
-      payload: { paymentMethod: 'cash', amountTenderedCents: 500 },
+
+    const first = await tender(ticket.id, 500);
+    expect(first.json<TicketDto>().status).toBe('open');
+
+    const second = await tender(ticket.id, 1000);
+    const paid = second.json<TicketDto>();
+
+    expect(paid.status).toBe('paid');
+    expect(paid.amountRemainingCents).toBe(0);
+    expect(paid.payments).toHaveLength(2);
+
+    expect(paid.payments[0]).toMatchObject({
+      sequence: 1,
+      amountTenderedCents: 500,
+      amountAppliedCents: 500,
+      changeDueCents: 0,
+    });
+    // Only the final tender can produce change: 480 owed, 1000 handed over.
+    expect(paid.payments[1]).toMatchObject({
+      sequence: 2,
+      amountTenderedCents: 1000,
+      amountAppliedCents: 480,
+      changeDueCents: 520,
     });
 
-    expect(response.statusCode).toBe(422);
-    expect(response.json().code).toBe('INSUFFICIENT_TENDER');
+    // The ticket's own columns stay a faithful summary of the tenders.
+    expect(paid.amountTenderedCents).toBe(1500);
+    expect(paid.changeDueCents).toBe(520);
+  });
+
+  it('handles an exact even split with no change', async () => {
+    const ticket = await openTicket();
+    await tender(ticket.id, 490);
+    const response = await tender(ticket.id, 490);
+    const paid = response.json<TicketDto>();
+
+    expect(paid.status).toBe('paid');
+    expect(paid.changeDueCents).toBe(0);
+    expect(paid.payments.map((p) => p.amountAppliedCents)).toEqual([490, 490]);
+  });
+
+  it('handles a three-way split', async () => {
+    const ticket = await openTicket();
+    await tender(ticket.id, 300);
+    await tender(ticket.id, 300);
+    const response = await tender(ticket.id, 400);
+    const paid = response.json<TicketDto>();
+
+    expect(paid.status).toBe('paid');
+    expect(paid.payments).toHaveLength(3);
+    expect(paid.payments.map((p) => p.sequence)).toEqual([1, 2, 3]);
+    expect(paid.amountPaidCents).toBe(980);
+    expect(paid.payments[2]).toMatchObject({ amountAppliedCents: 380, changeDueCents: 20 });
+  });
+
+  it('refuses a further tender once the ticket is settled', async () => {
+    const ticket = await openTicket();
+    await tender(ticket.id, 1000);
+
+    const extra = await tender(ticket.id, 500);
+    expect(extra.statusCode).toBe(409);
+    expect(extra.json().code).toBe('TICKET_ALREADY_PAID');
+  });
+
+  it('treats two identical tenders without keys as two real tenders', async () => {
+    // This is the heart of split tender: two people each handing over $5 must
+    // never be collapsed into one payment by matching on amount.
+    const ticket = await openTicket();
+    await tender(ticket.id, 500);
+    const second = await tender(ticket.id, 500);
+
+    const after = second.json<TicketDto>();
+    expect(after.payments).toHaveLength(2);
+    expect(after.amountPaidCents).toBe(980);
+    expect(after.status).toBe('paid');
+  });
+
+  it('treats a replayed tender key as the same tender', async () => {
+    const ticket = await openTicket();
+    const key = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+    const first = await tender(ticket.id, 500, key);
+    expect(first.json<TicketDto>().payments).toHaveLength(1);
+
+    const replay = await tender(ticket.id, 500, key);
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json<TicketDto>().payments).toHaveLength(1);
+    expect(replay.json<TicketDto>().amountPaidCents).toBe(500);
+  });
+
+  it('rejects a payment key already used on another ticket', async () => {
+    const key = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const a = await openTicket();
+    const b = await openTicket();
+
+    await tender(a.id, 500, key);
+    const reused = await tender(b.id, 500, key);
+
+    expect(reused.statusCode).toBe(409);
+    expect(reused.json().code).toBe('PAYMENT_KEY_REUSED');
+  });
+
+  it('never lets concurrent tenders overpay the balance', async () => {
+    const ticket = await openTicket();
+    const results = await Promise.all([
+      tender(ticket.id, 1000),
+      tender(ticket.id, 1000),
+      tender(ticket.id, 1000),
+    ]);
+
+    const settled = await app.inject({ method: 'GET', url: `/tickets/${ticket.id}` });
+    const after = settled.json<TicketDto>();
+
+    expect(after.status).toBe('paid');
+    expect(after.amountPaidCents).toBe(980);
+    expect(after.amountRemainingCents).toBe(0);
+    // Exactly one tender lands; the others find nothing left to pay.
+    expect(after.payments).toHaveLength(1);
+    expect(results.filter((r) => r.statusCode === 200)).toHaveLength(1);
+    expect(results.filter((r) => r.statusCode === 409)).toHaveLength(2);
+  });
+
+  it('rejects a zero or negative tender', async () => {
+    const ticket = await openTicket();
+    expect((await tender(ticket.id, 0)).statusCode).toBe(400);
+    expect((await tender(ticket.id, -100)).statusCode).toBe(400);
   });
 
   it('rejects payment methods other than cash', async () => {
@@ -357,52 +496,6 @@ describe('POST /tickets/:id/pay', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json().code).toBe('UNSUPPORTED_PAYMENT_METHOD');
-  });
-
-  it('treats an identical repeat as a replay and charges only once', async () => {
-    // A retried request is indistinguishable from the original, and a till
-    // syncing an offline sale will retry. It must get the receipt, not an error.
-    const ticket = await openTicket();
-    const payload = { paymentMethod: 'cash', amountTenderedCents: 1000 };
-    const first = await app.inject({ method: 'POST', url: `/tickets/${ticket.id}/pay`, payload });
-    expect(first.statusCode).toBe(200);
-
-    const second = await app.inject({ method: 'POST', url: `/tickets/${ticket.id}/pay`, payload });
-    expect(second.statusCode).toBe(200);
-    expect(second.json<TicketDto>()).toMatchObject({
-      id: ticket.id,
-      status: 'paid',
-      amountTenderedCents: 1000,
-      changeDueCents: 20,
-    });
-
-    const { rows } = await pool.query(
-      'SELECT status, change_due_cents FROM tickets WHERE id = $1',
-      [ticket.id],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].change_due_cents).toBe(20);
-  });
-
-  it('lets only one of two conflicting concurrent payments win', async () => {
-    // Different amounts are genuinely in conflict, so the compare-and-set must
-    // still let exactly one through.
-    const ticket = await openTicket();
-    const [a, b] = await Promise.all([
-      app.inject({
-        method: 'POST',
-        url: `/tickets/${ticket.id}/pay`,
-        payload: { paymentMethod: 'cash', amountTenderedCents: 1000 },
-      }),
-      app.inject({
-        method: 'POST',
-        url: `/tickets/${ticket.id}/pay`,
-        payload: { paymentMethod: 'cash', amountTenderedCents: 5000 },
-      }),
-    ]);
-
-    const codes = [a.statusCode, b.statusCode].sort((x, y) => x - y);
-    expect(codes).toEqual([200, 409]);
   });
 
   it('404s an unknown ticket', async () => {
@@ -546,11 +639,15 @@ describe('offline sync (idempotent replay)', () => {
     expect(new Date(response.json<TicketDto>().createdAt).toISOString()).toBe(placedAt);
   });
 
-  it('replaying the identical payment returns the receipt instead of 409', async () => {
+  it('replaying a keyed tender does not record it twice', async () => {
     const key = '44444444-4444-4444-8444-444444444444';
     const created = await app.inject({ method: 'POST', url: '/tickets', payload: offlineSale(key) });
     const ticketId = created.json<TicketDto>().id;
-    const payment = { paymentMethod: 'cash', amountTenderedCents: 1000 };
+    const payment = {
+      paymentMethod: 'cash',
+      amountTenderedCents: 1000,
+      clientPaymentId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    };
 
     const first = await app.inject({ method: 'POST', url: `/tickets/${ticketId}/pay`, payload: payment });
     expect(first.statusCode).toBe(200);
@@ -563,9 +660,10 @@ describe('offline sync (idempotent replay)', () => {
       amountTenderedCents: 1000,
       changeDueCents: 1000 - 680,
     });
+    expect(replay.json<TicketDto>().payments).toHaveLength(1);
   });
 
-  it('still rejects a second payment for a different amount', async () => {
+  it('refuses a further tender once a synced sale is settled', async () => {
     const key = '55555555-5555-4555-8555-555555555555';
     const created = await app.inject({ method: 'POST', url: '/tickets', payload: offlineSale(key) });
     const ticketId = created.json<TicketDto>().id;
@@ -577,13 +675,13 @@ describe('offline sync (idempotent replay)', () => {
     });
     expect(first.statusCode).toBe(200);
 
-    const different = await app.inject({
+    const extra = await app.inject({
       method: 'POST',
       url: `/tickets/${ticketId}/pay`,
       payload: { paymentMethod: 'cash', amountTenderedCents: 2000 },
     });
-    expect(different.statusCode).toBe(409);
-    expect(different.json().code).toBe('TICKET_NOT_OPEN');
+    expect(extra.statusCode).toBe(409);
+    expect(extra.json().code).toBe('TICKET_ALREADY_PAID');
   });
 
   it('an online ticket carries no idempotency key and never collides', async () => {

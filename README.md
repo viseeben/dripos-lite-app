@@ -101,6 +101,32 @@ must carry a complete, self-consistent payment record.
 
 ---
 
+## Split tender
+
+A ticket can be settled by several cash payments. Enter an amount smaller than
+the balance and it is applied in full, the ticket stays open, and the app asks
+for the next payment until nothing is owed. Each tender is stored as its own row
+against the same ticket, and only the final one can produce change — earlier
+ones are consumed entirely by the balance.
+
+Entering an amount happens on its own screen, which is what makes the back
+button behave the way a cashier expects: backing out discards the amount being
+typed and nothing else. Payments already confirmed stay on the ticket, and each
+can be removed individually from the checkout screen if one was keyed wrong.
+
+### The trap worth knowing about
+
+Offline sync (task 2) deduplicated a replayed payment by comparing method and
+amount. Split tender makes that wrong: two people each handing over $5 is an
+ordinary way to split a bill, and matching on amount would have silently
+swallowed one of them. Dedup is now strictly by key — every tender carries its
+own UUID, minted on the device before it is sent — so a replay is recognised as
+a replay and a genuine second $5 is recognised as a second payment.
+
+The arithmetic that divides a tender between balance and change lives in the
+shared money file and is enforced identical on both sides, because the client
+previews the split before the server records it.
+
 ## Working offline
 
 Connectivity is not something a till gets to assume. The app keeps working with

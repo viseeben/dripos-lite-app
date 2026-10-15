@@ -20,6 +20,13 @@ vi.mock('@react-native-community/netinfo', () => ({
   default: { addEventListener: () => () => undefined },
 }));
 
+// expo-crypto reaches into react-native, whose source is Flow and cannot be
+// parsed here. Keys are deterministic so assertions can name them.
+let uuidCounter = 0;
+vi.mock('expo-crypto', () => ({
+  randomUUID: () => `generated-${++uuidCounter}`,
+}));
+
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
   return {
@@ -37,6 +44,7 @@ vi.mock('../lib/api', async (importOriginal) => {
 import { ApiError, api } from '../lib/api';
 import { useConnectivityStore } from '../store/connectivity';
 import { useQueueStore, type NewQueuedTicket } from '../store/queue';
+import { summariseSession } from '../store/payment';
 import { syncQueue, useSyncStore } from '../lib/sync';
 
 const mockApi = api as unknown as {
@@ -64,11 +72,19 @@ const sale = (clientTicketId: string, placedAt = '2026-10-15T10:00:00.000Z'): Ne
   subtotalCents: 525,
   taxCents: 47,
   totalCents: 572,
-  amountTenderedCents: 1000,
-  changeDueCents: 428,
+  tenders: [{ clientPaymentId: `${clientTicketId}-p1`, amountTenderedCents: 1000 }],
 });
 
-const serverTicket = (id: string, status: 'open' | 'paid' = 'open') => ({
+/** The same sale, settled by two people splitting the bill. */
+const splitSale = (clientTicketId: string): NewQueuedTicket => ({
+  ...sale(clientTicketId),
+  tenders: [
+    { clientPaymentId: `${clientTicketId}-p1`, amountTenderedCents: 300 },
+    { clientPaymentId: `${clientTicketId}-p2`, amountTenderedCents: 300 },
+  ],
+});
+
+const serverTicket = (id: string, status: 'open' | 'paid' = 'open', paymentCount = 0) => ({
   id,
   status,
   subtotalCents: 525,
@@ -77,6 +93,17 @@ const serverTicket = (id: string, status: 'open' | 'paid' = 'open') => ({
   paymentMethod: status === 'paid' ? 'cash' : null,
   amountTenderedCents: status === 'paid' ? 1000 : null,
   changeDueCents: status === 'paid' ? 428 : null,
+  amountPaidCents: status === 'paid' ? 572 : 0,
+  amountRemainingCents: status === 'paid' ? 0 : 572,
+  payments: Array.from({ length: paymentCount }, (_unused, i) => ({
+    id: `pay-${i + 1}`,
+    sequence: i + 1,
+    paymentMethod: 'cash' as const,
+    amountTenderedCents: 1000,
+    amountAppliedCents: 572,
+    changeDueCents: 428,
+    createdAt: '2026-10-15T10:00:00.000Z',
+  })),
   createdAt: '2026-10-15T10:00:00.000Z',
   clientTicketId: null,
   items: [],
@@ -181,7 +208,7 @@ describe('syncQueue', () => {
 
   it('does not pay twice when a previous attempt already paid', async () => {
     // The ticket exists and is already settled: a prior run died after paying.
-    mockApi.createTicket.mockResolvedValue(serverTicket('server-1', 'paid'));
+    mockApi.createTicket.mockResolvedValue(serverTicket('server-1', 'paid', 1));
 
     await useQueueStore.getState().enqueue(sale('sale-1'));
     await syncQueue();
@@ -291,6 +318,104 @@ describe('syncQueue', () => {
     expect(outcome.attempted).toBe(0);
     expect(mockApi.createTicket).not.toHaveBeenCalled();
     expect(useQueueStore.getState().tickets[0]?.status).toBe('pending');
+  });
+});
+
+describe('split tender', () => {
+  it('replays every tender under its own key', async () => {
+    mockApi.createTicket.mockResolvedValue(serverTicket('server-1'));
+    mockApi.payTicket.mockResolvedValue(serverTicket('server-1', 'paid', 2));
+
+    await useQueueStore.getState().enqueue(splitSale('sale-1'));
+    await syncQueue();
+
+    expect(mockApi.payTicket).toHaveBeenCalledTimes(2);
+    const keys = mockApi.payTicket.mock.calls.map(
+      (call) => (call[1] as { clientPaymentId: string }).clientPaymentId,
+    );
+    expect(keys).toEqual(['sale-1-p1', 'sale-1-p2']);
+    expect(new Set(keys).size).toBe(2);
+  });
+
+  it('does not resend tenders after a retry', async () => {
+    mockApi.createTicket.mockResolvedValue(serverTicket('server-1'));
+    mockApi.payTicket.mockResolvedValue(serverTicket('server-1', 'paid', 2));
+
+    await useQueueStore.getState().enqueue(splitSale('sale-1'));
+    await syncQueue();
+    await syncQueue();
+
+    expect(mockApi.payTicket).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps tender keys stable across an app restart', async () => {
+    mockApi.createTicket.mockRejectedValueOnce(new ApiError(0, 'NETWORK_ERROR', 'offline'));
+
+    await useQueueStore.getState().enqueue(splitSale('sale-1'));
+    await syncQueue();
+    await restartApp();
+
+    mockApi.createTicket.mockResolvedValue(serverTicket('server-1'));
+    mockApi.payTicket.mockResolvedValue(serverTicket('server-1', 'paid', 2));
+    await syncQueue();
+
+    const keys = mockApi.payTicket.mock.calls.map(
+      (call) => (call[1] as { clientPaymentId: string }).clientPaymentId,
+    );
+    expect(keys).toEqual(['sale-1-p1', 'sale-1-p2']);
+  });
+
+  it('derives balances the way the server will', () => {
+    const totals = summariseSession(980, [
+      { clientPaymentId: 'a', amountTenderedCents: 500 },
+      { clientPaymentId: 'b', amountTenderedCents: 1000 },
+    ]);
+
+    expect(totals.amountPaidCents).toBe(980);
+    expect(totals.amountRemainingCents).toBe(0);
+    // Only the final tender yields change: 480 owed, 1000 handed over.
+    expect(totals.lines[0]).toMatchObject({ amountAppliedCents: 500, changeDueCents: 0 });
+    expect(totals.lines[1]).toMatchObject({ amountAppliedCents: 480, changeDueCents: 520 });
+    expect(totals.changeDueCents).toBe(520);
+  });
+
+  it('reports what is still owed part-way through a split', () => {
+    const totals = summariseSession(980, [{ clientPaymentId: 'a', amountTenderedCents: 300 }]);
+    expect(totals.amountPaidCents).toBe(300);
+    expect(totals.amountRemainingCents).toBe(680);
+    expect(totals.changeDueCents).toBe(0);
+  });
+});
+
+describe('upgrading from the pre-split-tender queue', () => {
+  it('converts a sale queued by the previous version', async () => {
+    // Written by the old build: one tender, recorded inline, under the old key.
+    diskStore.set(
+      'dripos.queue.v1',
+      JSON.stringify([
+        {
+          clientTicketId: 'legacy-1',
+          placedAt: '2026-10-15T09:00:00.000Z',
+          items: [],
+          subtotalCents: 525,
+          taxCents: 47,
+          totalCents: 572,
+          amountTenderedCents: 1000,
+          changeDueCents: 428,
+          status: 'pending',
+          attempts: 0,
+        },
+      ]),
+    );
+
+    await restartApp();
+
+    const [migrated] = useQueueStore.getState().tickets;
+    expect(migrated?.clientTicketId).toBe('legacy-1');
+    expect(migrated?.status).toBe('pending');
+    expect(migrated?.tenders).toEqual([
+      { clientPaymentId: 'legacy-1-1', amountTenderedCents: 1000 },
+    ]);
   });
 });
 

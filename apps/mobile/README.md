@@ -72,6 +72,29 @@ handles loading, error (with retry), empty, and success.
 
 ---
 
+## Split tender
+
+| Concern | Where |
+|---|---|
+| Payment in progress (persisted) | `src/store/payment.ts` |
+| Checkout hub: tenders taken, balance | `app/checkout/index.tsx` |
+| Entering one tender | `app/checkout/tender.tsx` |
+| Balance/change arithmetic | `src/lib/money.ts` → `applyTenderCents` |
+
+Collecting an amount is a route of its own. That is the whole mechanism behind
+the back-button requirement: the half-typed amount exists only on that screen,
+so dismissing it discards that entry and leaves confirmed tenders alone. No
+custom interception, no dirty-state prompt — just ordinary navigation.
+
+The session is persisted for the same reason the offline queue is: cash already
+in the drawer must survive the app dying mid-split. It is keyed to the cart
+total, so changing the order starts the payment over rather than applying tenders
+to a total they were never taken against.
+
+Each tender carries its own UUID. Sync replays the whole set under those keys,
+so an interrupted sync resends everything and the server records each tender
+once.
+
 ## Offline support
 
 | Concern | Where |

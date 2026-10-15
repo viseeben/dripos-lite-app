@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { startConnectivityWatch, useConnectivityStore } from '../store/connectivity';
 import { useQueueStore } from '../store/queue';
+import { usePaymentSessionStore } from '../store/payment';
 import { syncQueue } from './sync';
 
 export function useOfflineRuntime(): { ready: boolean } {
@@ -24,6 +25,7 @@ export function useOfflineRuntime(): { ready: boolean } {
     void Promise.all([
       useConnectivityStore.getState().hydrate(),
       useQueueStore.getState().hydrate(),
+      usePaymentSessionStore.getState().hydrate(),
     ]).then(() => {
       if (!cancelled) setReady(true);
     });

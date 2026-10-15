@@ -26,6 +26,7 @@ function extractFunctions(source) {
     'computeSubtotalCents',
     'formatCents',
     'formatDelta',
+    'applyTenderCents',
   ];
   const stripped = source
     .replace(/\/\*\*[\s\S]*?\*\//g, '')
