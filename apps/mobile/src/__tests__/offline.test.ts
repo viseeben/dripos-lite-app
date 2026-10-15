@@ -513,6 +513,34 @@ describe('an error nobody anticipated', () => {
   });
 });
 
+describe('discarding a sale that can never sync', () => {
+  it('removes it from the device and from disk', async () => {
+    mockApi.createTicket.mockRejectedValue(
+      new ApiError(422, 'TOTAL_MISMATCH', 'Order total does not match.'),
+    );
+
+    await useQueueStore.getState().enqueue(sale('sale-1'));
+    await syncQueue();
+    expect(useQueueStore.getState().tickets[0]?.status).toBe('failed');
+
+    useQueueStore.getState().discard('sale-1');
+    expect(useQueueStore.getState().tickets).toHaveLength(0);
+
+    // Gone for good: it does not come back on the next launch.
+    await restartApp();
+    expect(useQueueStore.getState().tickets).toHaveLength(0);
+  });
+
+  it('leaves other queued sales alone', async () => {
+    await useQueueStore.getState().enqueue(sale('keep-me'));
+    await useQueueStore.getState().enqueue(sale('drop-me'));
+
+    useQueueStore.getState().discard('drop-me');
+
+    expect(useQueueStore.getState().tickets.map((t) => t.clientTicketId)).toEqual(['keep-me']);
+  });
+});
+
 describe('pending count', () => {
   it('counts everything not yet banked on the server', async () => {
     mockApi.createTicket.mockResolvedValue(serverTicket('server-1'));

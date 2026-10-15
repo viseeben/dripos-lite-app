@@ -1,4 +1,4 @@
-import { ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Colors, IconSize, Radius, Spacing, TypeScale } from '../../src/theme';
 import { Button } from '../../src/components/Button';
@@ -6,6 +6,7 @@ import { Divider } from '../../src/components/Divider';
 import { useConnectivityStore, useIsOffline } from '../../src/store/connectivity';
 import { selectUnsynced, useQueueStore } from '../../src/store/queue';
 import { syncQueue, useSyncStore } from '../../src/lib/sync';
+import { formatCents } from '../../src/lib/money';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '(not configured)';
 
@@ -17,6 +18,7 @@ export default function SettingsScreen() {
 
   const tickets = useQueueStore((s) => s.tickets);
   const retry = useQueueStore((s) => s.retry);
+  const discard = useQueueStore((s) => s.discard);
   const clearSynced = useQueueStore((s) => s.clearSynced);
 
   const isSyncing = useSyncStore((s) => s.isSyncing);
@@ -114,14 +116,40 @@ export default function SettingsScreen() {
         />
 
         {failed.length > 0 ? (
-          <Button
-            label={`Retry ${failed.length} failed`}
-            variant="secondary"
-            onPress={() => {
-              for (const ticket of failed) retry(ticket.clientTicketId);
-              void syncQueue();
-            }}
-          />
+          <>
+            <Button
+              label={`Retry ${failed.length} failed`}
+              variant="secondary"
+              onPress={() => {
+                for (const ticket of failed) retry(ticket.clientTicketId);
+                void syncQueue();
+              }}
+            />
+            <Button
+              label={`Discard ${failed.length} failed`}
+              variant="secondary"
+              onPress={() => {
+                // Discarding throws away the record of cash that was taken, so
+                // it asks first and names the amount at stake.
+                const total = failed.reduce((sum, t) => sum + t.totalCents, 0);
+                Alert.alert(
+                  `Discard ${failed.length} order${failed.length === 1 ? '' : 's'}?`,
+                  `${formatCents(total)} of sales will be removed from this device and will never reach the server. This cannot be undone.`,
+                  [
+                    { text: 'Keep', style: 'cancel' },
+                    {
+                      text: 'Discard',
+                      style: 'destructive',
+                      onPress: () => {
+                        for (const ticket of failed) discard(ticket.clientTicketId);
+                      },
+                    },
+                  ],
+                );
+              }}
+              accessibilityHint="Permanently removes orders that cannot be synced"
+            />
+          </>
         ) : null}
 
         {syncedCount > 0 ? (

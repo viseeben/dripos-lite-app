@@ -71,6 +71,14 @@ interface QueueState {
   markFailed: (clientTicketId: string, error: string) => void;
   /** Returns a failed ticket to the queue so the next sync retries it. */
   retry: (clientTicketId: string) => void;
+  /**
+   * Removes a sale from this device for good.
+   *
+   * Only for a sale the server will never accept - a stale total, a product
+   * that no longer exists. It discards the record of cash taken, so it is
+   * deliberately not offered for anything still pending.
+   */
+  discard: (clientTicketId: string) => void;
   clearSynced: () => void;
 }
 
@@ -198,6 +206,8 @@ export const useQueueStore = create<QueueState>()((set, get) => {
     markFailed: (id, error) => patch(id, { status: 'failed', lastError: error }),
 
     retry: (id) => patch(id, { status: 'pending', lastError: undefined }),
+
+    discard: (id) => update((tickets) => tickets.filter((t) => t.clientTicketId !== id)),
 
     clearSynced: () => update((tickets) => tickets.filter((t) => t.status !== 'synced')),
   };
