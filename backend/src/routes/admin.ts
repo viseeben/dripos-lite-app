@@ -78,9 +78,16 @@ export const adminRoutes: FastifyPluginAsync<{ db: Database; env: Env }> = async
       tickets: 0,
     };
 
+    // Which migrations this instance has actually applied. A deploy that did
+    // not land is otherwise indistinguishable from a bug in the app.
+    const migrations = await db.execute<{ name: string }>(
+      sql`SELECT name FROM schema_migrations ORDER BY name`,
+    );
+
     return {
       ok: true,
       environment: env.NODE_ENV,
+      migrations: migrations.rows.map((r) => r.name),
       mockApiConfigured: Boolean(env.MOCK_API_URL),
       adminTokenConfigured: Boolean(env.ADMIN_TOKEN),
       seedOnStart: env.SEED_ON_START,

@@ -41,7 +41,7 @@ vi.mock('../lib/api', async (importOriginal) => {
   };
 });
 
-import { ApiError, api } from '../lib/api';
+import { ApiError, api, normalizeTicket } from '../lib/api';
 import { useConnectivityStore } from '../store/connectivity';
 import { useQueueStore, type NewQueuedTicket } from '../store/queue';
 import { summariseSession } from '../store/payment';
@@ -416,6 +416,100 @@ describe('upgrading from the pre-split-tender queue', () => {
     expect(migrated?.tenders).toEqual([
       { clientPaymentId: 'legacy-1-1', amountTenderedCents: 1000 },
     ]);
+  });
+});
+
+describe('tolerating an older backend', () => {
+  // The app and the server deploy separately, so new app + old server happens.
+  const legacyPaidTicket = {
+    id: 'server-1',
+    status: 'paid',
+    subtotalCents: 525,
+    taxCents: 47,
+    totalCents: 572,
+    paymentMethod: 'cash',
+    amountTenderedCents: 1000,
+    changeDueCents: 428,
+    createdAt: '2026-10-15T10:00:00.000Z',
+    clientTicketId: null,
+    items: [],
+    // No `payments`, no `amountPaidCents`, no `amountRemainingCents`.
+  } as unknown as Parameters<typeof normalizeTicket>[0];
+
+  it('fills in a ticket that predates split tender', () => {
+    const ticket = normalizeTicket(legacyPaidTicket);
+
+    expect(ticket.payments).toHaveLength(1);
+    expect(ticket.payments[0]).toMatchObject({
+      sequence: 1,
+      paymentMethod: 'cash',
+      amountTenderedCents: 1000,
+      amountAppliedCents: 572,
+      changeDueCents: 428,
+    });
+    expect(ticket.amountPaidCents).toBe(572);
+    expect(ticket.amountRemainingCents).toBe(0);
+  });
+
+  it('gives an unpaid legacy ticket an empty payment list rather than undefined', () => {
+    const ticket = normalizeTicket({
+      ...legacyPaidTicket,
+      status: 'open',
+      paymentMethod: null,
+      amountTenderedCents: null,
+      changeDueCents: null,
+    } as unknown as Parameters<typeof normalizeTicket>[0]);
+
+    expect(ticket.payments).toEqual([]);
+    expect(ticket.amountPaidCents).toBe(0);
+    expect(ticket.amountRemainingCents).toBe(572);
+  });
+
+  it('syncs a sale even if the response has no payments array at all', async () => {
+    // Regression: this threw a TypeError, which was then classified as
+    // transient, so the sale retried forever and never synced.
+    mockApi.createTicket.mockResolvedValue({
+      id: 'server-1',
+      status: 'open',
+      totalCents: 572,
+      items: [],
+    });
+    mockApi.payTicket.mockResolvedValue({ id: 'server-1', status: 'paid', totalCents: 572 });
+
+    await useQueueStore.getState().enqueue(sale('sale-1'));
+    const outcome = await syncQueue();
+
+    expect(outcome.synced).toBe(1);
+    expect(useQueueStore.getState().tickets[0]?.status).toBe('synced');
+  });
+});
+
+describe('an error nobody anticipated', () => {
+  it('is parked with its reason rather than retried forever', async () => {
+    // Not an ApiError, so neither a clean rejection nor a network outage.
+    mockApi.createTicket.mockRejectedValue(
+      new TypeError("Cannot read property 'length' of undefined"),
+    );
+
+    await useQueueStore.getState().enqueue(sale('sale-1'));
+
+    for (let i = 0; i < 6; i += 1) await syncQueue();
+
+    const [ticket] = useQueueStore.getState().tickets;
+    expect(ticket?.status).toBe('failed');
+    expect(ticket?.lastError).toContain('length');
+    // It stopped trying instead of hammering the server indefinitely.
+    expect(mockApi.createTicket.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
+  it('still retries a network outage indefinitely', async () => {
+    mockApi.createTicket.mockRejectedValue(new ApiError(0, 'NETWORK_ERROR', 'offline'));
+
+    await useQueueStore.getState().enqueue(sale('sale-1'));
+    for (let i = 0; i < 8; i += 1) await syncQueue();
+
+    // Never parked: the connection genuinely will come back.
+    expect(useQueueStore.getState().tickets[0]?.status).toBe('pending');
   });
 });
 

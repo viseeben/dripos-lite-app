@@ -20,7 +20,11 @@ export default function TicketDetailScreen() {
   const { data: ticket, isPending, isError, error, refetch } = useTicket(id);
 
   if (isPending) return <LoadingState message="Loading ticket…" />;
-  if (isError) return <ErrorState message={errorMessage(error)} onRetry={() => void refetch()} />;
+  if (isError || !ticket) {
+    return <ErrorState message={errorMessage(error)} onRetry={() => void refetch()} />;
+  }
+
+  const payments = ticket.payments ?? [];
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
@@ -74,19 +78,19 @@ export default function TicketDetailScreen() {
         />
       </View>
 
-      {ticket.payments.length > 0 ? (
+      {payments.length > 0 ? (
         <View style={styles.card}>
           <Text style={styles.sectionLabel}>
-            {ticket.payments.length > 1
-              ? `Payments (${ticket.payments.length})`
+            {payments.length > 1
+              ? `Payments (${payments.length})`
               : 'Payment'}
           </Text>
 
-          {ticket.payments.map((payment, index) => (
+          {payments.map((payment, index) => (
             <View key={payment.id} style={styles.item}>
               <View style={styles.itemHeader}>
                 <Text style={styles.itemName}>
-                  {ticket.payments.length > 1 ? `Payment ${index + 1} · ` : ''}
+                  {payments.length > 1 ? `Payment ${index + 1} · ` : ''}
                   {PAYMENT_LABELS[payment.paymentMethod] ?? payment.paymentMethod}
                 </Text>
                 <Text style={styles.itemAmount}>{formatCents(payment.amountTenderedCents)}</Text>
@@ -106,7 +110,7 @@ export default function TicketDetailScreen() {
             </View>
           ))}
 
-          {ticket.payments.length > 1 ? (
+          {payments.length > 1 ? (
             <>
               <DetailRow
                 label="Total tendered"

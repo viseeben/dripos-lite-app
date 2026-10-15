@@ -42,14 +42,39 @@ export const useSyncStore = create<SyncState>()((set) => ({
 }));
 
 /**
+ * How many times a sale may fail for a reason we did not anticipate before it
+ * is parked. Network outages are exempt - those retry indefinitely, because the
+ * connection genuinely will come back.
+ */
+const MAX_UNEXPECTED_ATTEMPTS = 5;
+
+/**
  * A rejection the server will give the same answer to every time - a deleted
- * product, a total that no longer reconciles. Retrying cannot help, so the sale
- * is parked as failed and surfaced rather than retried forever.
+ * product, a total that no longer reconciles. Retrying cannot help.
  */
 function isPermanent(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
   if (error.code === 'NETWORK_ERROR' || error.code === 'TIMEOUT') return false;
   return error.status >= 400 && error.status < 500;
+}
+
+function isNetworkOutage(error: unknown): boolean {
+  return error instanceof ApiError && (error.code === 'NETWORK_ERROR' || error.code === 'TIMEOUT');
+}
+
+/**
+ * Decides what to do with a failed sale.
+ *
+ * The important case is the third one. An error that is neither a clean
+ * rejection nor a network outage - a 5xx, or a bug in this code meeting an
+ * unexpected response shape - must not retry forever in silence, because that
+ * looks exactly like a sale that simply never syncs. After a few attempts it is
+ * parked with its reason visible, and can be retried deliberately.
+ */
+function decide(error: unknown, attempts: number): 'park' | 'retry' {
+  if (isPermanent(error)) return 'park';
+  if (isNetworkOutage(error)) return 'retry';
+  return attempts >= MAX_UNEXPECTED_ATTEMPTS ? 'park' : 'retry';
 }
 
 async function syncOne(queued: QueuedTicket): Promise<void> {
@@ -71,7 +96,9 @@ async function syncOne(queued: QueuedTicket): Promise<void> {
   });
 
   // Already fully settled with every tender recorded: nothing left to send.
-  if (ticket.status === 'paid' && ticket.payments.length >= queued.tenders.length) {
+  // Defensive: an older backend omits `payments` entirely. The API layer fills
+  // it in, but sync must not be the thing that breaks if anything slips past.
+  if (ticket.status === 'paid' && (ticket.payments?.length ?? 0) >= queued.tenders.length) {
     useQueueStore.getState().markSynced(queued.clientTicketId, ticket.id);
     return;
   }
@@ -129,12 +156,16 @@ export async function syncQueue(): Promise<SyncOutcome> {
         await syncOne(queued);
         outcome.synced += 1;
       } catch (err) {
-        if (isPermanent(err)) {
-          useQueueStore.getState().markFailed(queued.clientTicketId, errorMessage(err));
+        const store = useQueueStore.getState();
+        const attempts =
+          store.tickets.find((t) => t.clientTicketId === queued.clientTicketId)?.attempts ?? 0;
+
+        if (decide(err, attempts) === 'park') {
+          store.markFailed(queued.clientTicketId, errorMessage(err));
           outcome.failed += 1;
         } else {
-          // Transient. Leave it pending so the next run picks it up unchanged.
-          useQueueStore.getState().retry(queued.clientTicketId);
+          // Leave it pending so the next run picks it up unchanged.
+          store.retry(queued.clientTicketId);
           outcome.interrupted = true;
           break;
         }

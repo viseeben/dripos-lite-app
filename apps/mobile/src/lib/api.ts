@@ -96,24 +96,70 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return parsed as T;
 }
 
+/**
+ * Fills in a ticket the server did not fully describe.
+ *
+ * The app and the backend deploy separately, so a phone running new code can
+ * meet a server running old code. Normalising here means every screen sees a
+ * complete ticket and no consumer has to guard individual fields — a missing
+ * `payments` array should never be able to crash a till.
+ */
+export function normalizeTicket(raw: Ticket): Ticket {
+  const reported = Array.isArray(raw.payments) ? raw.payments : [];
+
+  // A backend from before split tender described one payment inline.
+  const payments =
+    reported.length === 0 && raw.status === 'paid' && raw.amountTenderedCents !== null
+      ? [
+          {
+            id: `${raw.id}-1`,
+            sequence: 1,
+            paymentMethod: raw.paymentMethod ?? 'cash',
+            amountTenderedCents: raw.amountTenderedCents,
+            amountAppliedCents: raw.totalCents,
+            changeDueCents: raw.changeDueCents ?? 0,
+            createdAt: raw.createdAt,
+          },
+        ]
+      : reported;
+
+  const amountPaidCents =
+    raw.amountPaidCents ?? payments.reduce((sum, p) => sum + p.amountAppliedCents, 0);
+
+  return {
+    ...raw,
+    payments,
+    amountPaidCents,
+    amountRemainingCents: raw.amountRemainingCents ?? Math.max(0, raw.totalCents - amountPaidCents),
+    items: Array.isArray(raw.items) ? raw.items : [],
+  };
+}
+
 export const api = {
   listProducts: () => request<Product[]>('/products'),
 
   createTicket: (payload: CreateTicketRequest) =>
-    request<Ticket>('/tickets', { method: 'POST', body: JSON.stringify(payload) }),
+    request<Ticket>('/tickets', { method: 'POST', body: JSON.stringify(payload) }).then(
+      normalizeTicket,
+    ),
 
   payTicket: (ticketId: string, payload: PayTicketRequest) =>
-    request<Ticket>(`/tickets/${ticketId}/pay`, { method: 'POST', body: JSON.stringify(payload) }),
+    request<Ticket>(`/tickets/${ticketId}/pay`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }).then(normalizeTicket),
 
   listTickets: (limit = 50, offset = 0) =>
     request<ListTicketsResponse>(`/tickets?limit=${limit}&offset=${offset}`),
 
-  getTicket: (ticketId: string) => request<Ticket>(`/tickets/${ticketId}`),
+  getTicket: (ticketId: string) =>
+    request<Ticket>(`/tickets/${ticketId}`).then(normalizeTicket),
 };
 
 /** Turns any thrown value into something worth showing a cashier. */
 export function errorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error) return error;
   return 'Something went wrong. Please try again.';
 }

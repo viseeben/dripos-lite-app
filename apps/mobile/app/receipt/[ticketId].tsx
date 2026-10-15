@@ -19,6 +19,7 @@ export default function ReceiptScreen() {
   const serverQuery = useTicket(queued ? undefined : ticketId);
 
   const ticket = queued ? queuedTicketToTicket(queued) : serverQuery.data;
+  const payments = ticket?.payments ?? [];
 
   if (!queued && serverQuery.isPending) return <LoadingState message="Loading receipt…" />;
   if (!ticket) {
@@ -77,21 +78,21 @@ export default function ReceiptScreen() {
           <Row label="Tax (8.875%)" value={formatCents(ticket.taxCents)} />
           <Row label="Total" value={formatCents(ticket.totalCents)} emphasis />
 
-          {ticket.payments.length > 0 ? (
+          {payments.length > 0 ? (
             <>
               <Divider />
-              {ticket.payments.length === 1 ? (
+              {payments.length === 1 ? (
                 <Row
                   label="Cash Tendered"
-                  value={formatCents(ticket.payments[0]?.amountTenderedCents ?? 0)}
+                  value={formatCents(payments[0]?.amountTenderedCents ?? 0)}
                 />
               ) : (
                 <>
                   {/* A split bill: each person's cash is its own line. */}
-                  {ticket.payments.map((payment, index) => (
+                  {payments.map((payment, index) => (
                     <Row
                       key={payment.id}
-                      label={`Cash ${index + 1} of ${ticket.payments.length}`}
+                      label={`Cash ${index + 1} of ${payments.length}`}
                       value={formatCents(payment.amountTenderedCents)}
                     />
                   ))}
