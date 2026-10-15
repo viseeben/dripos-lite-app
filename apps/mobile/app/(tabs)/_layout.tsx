@@ -2,9 +2,11 @@ import { Tabs } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import { Colors, FontFamily } from '../../src/theme';
 import { useCartLineCount } from '../../src/store/cart';
+import { usePendingCount } from '../../src/store/queue';
 
 export default function TabsLayout() {
   const lineCount = useCartLineCount();
+  const pendingSync = usePendingCount();
 
   return (
     <Tabs
@@ -57,7 +59,20 @@ export default function TabsLayout() {
           title: 'Tickets',
           headerShown: false,
           tabBarIcon: ({ color, size }) => <Feather name="file-text" size={size} color={color} />,
-          tabBarAccessibilityLabel: 'Tickets',
+          // How many sales are still held on this device, visible from anywhere.
+          tabBarBadge: pendingSync > 0 ? pendingSync : undefined,
+          tabBarAccessibilityLabel:
+            pendingSync > 0
+              ? `Tickets, ${pendingSync} pending sync`
+              : 'Tickets',
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: 'Settings',
+          tabBarIcon: ({ color, size }) => <Feather name="settings" size={size} color={color} />,
+          tabBarAccessibilityLabel: 'Settings',
         }}
       />
     </Tabs>

@@ -13,7 +13,11 @@
     "mobile:start": "npm --prefix apps/mobile start",
     "mobile:typecheck": "npm --prefix apps/mobile run typecheck",
     "install:all": "npm --prefix backend install && npm --prefix apps/mobile install",
-    "typecheck": "npm run backend:typecheck && npm run mobile:typecheck && npm run check:shared"
+    "typecheck": "npm run backend:typecheck && npm run mobile:typecheck && npm run check:shared",
+    "mobile:test": "npm --prefix apps/mobile test",
+    "test": "npm run backend:test && npm run mobile:test"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

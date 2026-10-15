@@ -72,6 +72,53 @@ handles loading, error (with retry), empty, and success.
 
 ---
 
+## Offline support
+
+| Concern | Where |
+|---|---|
+| Durable queue of offline sales | `src/store/queue.ts` |
+| Drain logic and retry classification | `src/lib/sync.ts` |
+| Connection state + simulate-offline switch | `src/store/connectivity.ts` |
+| Menu caching and fallback | `src/lib/queries.ts` |
+| Startup, reconnect and foreground triggers | `src/lib/runtime.ts` |
+| Persistence | `src/lib/storage.ts` (AsyncStorage) |
+
+**Taking a sale offline.** Checkout builds a complete snapshot — product names,
+modifiers, unit prices, tender and change — mints a UUID for it, and writes it to
+disk *before* reporting success. The receipt renders from that snapshot, so it
+appears instantly with no server.
+
+**Falling back, not failing.** If an online submit dies on a network error or a
+timeout, the sale is queued rather than lost. Any other error (a rejected total,
+a missing product) is a real problem and is shown to the cashier.
+
+**Retry policy.** Network errors, timeouts and 5xx leave a sale pending for the
+next attempt. A 4xx means the server will say the same thing forever, so the
+sale is parked as `failed`, surfaced in the ticket list with its reason, and
+retried only when asked from Settings.
+
+**Crash recovery.** A sale left mid-sync is reset to pending on next launch.
+Replaying is safe because the key never changes.
+
+### Demonstrating it
+
+Settings → **Simulate offline**. The banner appears, the menu keeps working from
+cache, checkout completes and prints a receipt marked "Pending sync", and the
+Tickets tab shows a badge. Switch it back off and the queue drains on its own.
+
+Force-quitting the app with sales queued and reopening it is the interesting
+case: the count survives, and syncing still produces one ticket each.
+
+### Not persisted
+
+The in-progress cart is intentionally not written to disk — only completed sales
+are. Closing the app mid-order loses the cart, which is recoverable by re-ringing
+it; losing a sale already paid for in cash is not.
+
+```bash
+npm test        # 14 tests covering the queue, sync and idempotency
+```
+
 ## Deliberate deviations from the original spec
 
 **Expo SDK 57, not 51.** Expo Go on the App Store and Play Store only runs the

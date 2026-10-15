@@ -112,6 +112,13 @@ adds a query.
 }
 ```
 
+`clientTicketId` and `placedAt` are optional and exist for offline sync: a device
+that took a sale with no connection sends the UUID it minted at the time, and
+resending it returns the original ticket rather than creating a second one. Two
+simultaneous syncs of one sale collapse onto one row. `placedAt` records when the
+sale actually happened, which may long predate its arrival here; receipts and the
+ticket list show and order by it.
+
 **The server does not trust these totals.** It reprices the whole ticket from the
 database and compares. Any difference — even one cent — is rejected:
 
@@ -144,11 +151,14 @@ Returns the ticket with `status: "paid"` and `changeDueCents`.
 |---|---|---|
 | `UNSUPPORTED_PAYMENT_METHOD` | 400 | Only `cash` is implemented |
 | `TICKET_NOT_FOUND` | 404 | No such ticket |
-| `TICKET_NOT_OPEN` | 409 | Already paid or voided |
+| `TICKET_NOT_OPEN` | 409 | Already paid with a *different* amount, or voided |
 | `INSUFFICIENT_TENDER` | 422 | Tendered less than the total |
 
 Payment is an atomic compare-and-set (`UPDATE ... WHERE status = 'open'`), so two
-concurrent requests cannot both succeed. There is a test for exactly that.
+conflicting concurrent requests cannot both succeed. Replaying the *identical*
+payment is deliberately not a conflict: a retried request is indistinguishable
+from the original, and a till syncing an offline sale will retry, so it returns
+the receipt. A different amount is a genuine conflict and is rejected.
 
 ### `GET /tickets?limit=50&offset=0` → `200`
 Newest first. `limit` defaults to 50, caps at 100. `itemCount` is the summed quantity.

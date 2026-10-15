@@ -4,6 +4,8 @@ import { Colors, Radius, Spacing, TypeScale } from '../../src/theme';
 import { formatCents } from '../../src/lib/money';
 import { errorMessage } from '../../src/lib/api';
 import { useTicket } from '../../src/lib/queries';
+import { queuedTicketToTicket, useQueuedTicket } from '../../src/store/queue';
+import { SyncBadge } from '../../src/components/SyncBadge';
 import { ErrorState, LoadingState } from '../../src/components/States';
 import { Button } from '../../src/components/Button';
 import { Divider } from '../../src/components/Divider';
@@ -11,10 +13,22 @@ import { Divider } from '../../src/components/Divider';
 export default function ReceiptScreen() {
   const { ticketId } = useLocalSearchParams<{ ticketId: string }>();
   const router = useRouter();
-  const { data: ticket, isPending, isError, error, refetch } = useTicket(ticketId);
+  // A sale taken offline is identified by its own key and lives on this device
+  // until it syncs, so the receipt is rendered from the queue without a server.
+  const queued = useQueuedTicket(ticketId);
+  const serverQuery = useTicket(queued ? undefined : ticketId);
 
-  if (isPending) return <LoadingState message="Loading receipt…" />;
-  if (isError) return <ErrorState message={errorMessage(error)} onRetry={() => void refetch()} />;
+  const ticket = queued ? queuedTicketToTicket(queued) : serverQuery.data;
+
+  if (!queued && serverQuery.isPending) return <LoadingState message="Loading receipt…" />;
+  if (!ticket) {
+    return (
+      <ErrorState
+        message={errorMessage(serverQuery.error)}
+        onRetry={() => void serverQuery.refetch()}
+      />
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -31,6 +45,11 @@ export default function ReceiptScreen() {
               })}
             </Text>
             <Text style={styles.meta}>#{ticket.id.slice(-8).toUpperCase()}</Text>
+            {queued ? (
+              <View style={styles.syncRow}>
+                <SyncBadge status={queued.status} />
+              </View>
+            ) : null}
           </View>
 
           <Divider />
@@ -70,6 +89,11 @@ export default function ReceiptScreen() {
 
           <Divider />
           <Text style={styles.thanks}>Thank you!</Text>
+          {queued && queued.status !== 'synced' ? (
+            <Text style={styles.offlineNote}>
+              Saved on this device. It will sync automatically once you’re back online.
+            </Text>
+          ) : null}
         </View>
       </ScrollView>
 
@@ -121,6 +145,13 @@ const styles = StyleSheet.create({
   rowValue: { ...TypeScale.amount, color: Colors.textPrimary },
   rowValueEmphasis: { ...TypeScale.amountLarge, color: Colors.textPrimary },
   thanks: { ...TypeScale.label, color: Colors.textMuted, textAlign: 'center', paddingTop: Spacing.sm },
+  syncRow: { paddingTop: Spacing.xs },
+  offlineNote: {
+    ...TypeScale.bodySmall,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    paddingTop: Spacing.xs,
+  },
   footer: {
     padding: Spacing.base,
     borderTopWidth: 1,

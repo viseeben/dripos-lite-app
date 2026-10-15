@@ -6,21 +6,23 @@ import { formatCents } from '../../src/lib/money';
 import { errorMessage } from '../../src/lib/api';
 import { useProducts } from '../../src/lib/queries';
 import { EmptyState, ErrorState, LoadingState } from '../../src/components/States';
+import { OfflineBanner } from '../../src/components/OfflineBanner';
 import type { Product } from '../../src/types/api';
 
 export default function MenuScreen() {
   const router = useRouter();
-  const { data: products, isPending, isError, error, refetch } = useProducts();
+  const { data, isPending, isError, error, refetch } = useProducts();
 
   if (isPending) return <LoadingState message="Loading menu…" />;
   if (isError) return <ErrorState message={errorMessage(error)} onRetry={() => void refetch()} />;
-  if (products.length === 0) {
+  if (data.products.length === 0) {
     return <EmptyState icon="coffee" title="No products available" body="The menu is empty." />;
   }
 
   return (
     <FlatList
-      data={products}
+      data={data.products}
+      ListHeaderComponent={<OfflineBanner cachedMenu={data.fromCache} />}
       keyExtractor={(item) => item.id}
       contentContainerStyle={styles.list}
       renderItem={({ item }) => (

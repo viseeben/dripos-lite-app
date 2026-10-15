@@ -14,7 +14,11 @@ import { useRouter } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Colors, IconSize, MIN_TOUCH_TARGET, Radius, Spacing, TypeScale } from '../src/theme';
 import { formatCents, parseDollarsToCents } from '../src/lib/money';
-import { api, errorMessage } from '../src/lib/api';
+import * as Crypto from 'expo-crypto';
+import { ApiError, api, errorMessage } from '../src/lib/api';
+import { isOfflineNow, useIsOffline } from '../src/store/connectivity';
+import { useQueueStore } from '../src/store/queue';
+import { OfflineBanner } from '../src/components/OfflineBanner';
 import { Button } from '../src/components/Button';
 import { Divider } from '../src/components/Divider';
 import { TotalsBlock } from '../src/components/TotalsBlock';
@@ -41,6 +45,11 @@ export default function CheckoutScreen() {
 
   const [tendered, setTendered] = useState('');
   const [errorText, setErrorText] = useState<string | null>(null);
+  /** Identity of this sale. Minted once so a retry is a retry, not a new sale. */
+  const [saleId] = useState(() => Crypto.randomUUID());
+
+  const offline = useIsOffline();
+  const enqueue = useQueueStore((s) => s.enqueue);
 
   const tenderedCents = parseDollarsToCents(tendered);
   const changeDueCents =
@@ -57,27 +66,77 @@ export default function CheckoutScreen() {
   }, [totalCents]);
 
   const submit = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (): Promise<{ receiptId: string; queued: boolean }> => {
       if (tenderedCents === null) throw new Error('Enter the amount tendered.');
-      const ticket = await api.createTicket({
+
+      // Everything needed to print this receipt without a server, and to
+      // replay the sale later without re-deriving anything.
+      const sale = {
+        clientTicketId: saleId,
+        placedAt: new Date().toISOString(),
         items: items.map((item) => ({
           productId: item.productId,
+          productName: item.productName,
           quantity: item.quantity,
-          selectedModifierOptionIds: item.selectedModifiers.map((m) => m.optionId),
+          unitPriceCents: item.unitPriceCents,
+          lineTotalCents: item.lineTotalCents,
+          modifiers: item.selectedModifiers.map((m) => ({
+            optionId: m.optionId,
+            name: m.optionName,
+            groupName: m.modifierGroupName,
+            priceDeltaCents: m.priceDeltaCents,
+          })),
         })),
         subtotalCents,
         taxCents,
         totalCents,
-      });
-      return api.payTicket(ticket.id, {
-        paymentMethod: 'cash',
         amountTenderedCents: tenderedCents,
-      });
+        changeDueCents: tenderedCents - totalCents,
+      };
+
+      if (isOfflineNow()) {
+        const queued = await enqueue(sale);
+        return { receiptId: queued.clientTicketId, queued: true };
+      }
+
+      try {
+        const ticket = await api.createTicket({
+          items: sale.items.map((item) => ({
+            productId: item.productId,
+            quantity: item.quantity,
+            selectedModifierOptionIds: item.modifiers.map((m) => m.optionId),
+          })),
+          subtotalCents,
+          taxCents,
+          totalCents,
+          // Sent even when online: a response lost in flight must not become a
+          // second charge when the cashier taps Submit again.
+          clientTicketId: saleId,
+          placedAt: sale.placedAt,
+        });
+        const paid =
+          ticket.status === 'paid'
+            ? ticket
+            : await api.payTicket(ticket.id, {
+                paymentMethod: 'cash',
+                amountTenderedCents: tenderedCents,
+              });
+        return { receiptId: paid.id, queued: false };
+      } catch (err) {
+        // A connection that dies mid-sale must never lose the sale. Anything
+        // else - a rejected total, a missing product - is a real error the
+        // cashier has to see.
+        const transient =
+          err instanceof ApiError && (err.code === 'NETWORK_ERROR' || err.code === 'TIMEOUT');
+        if (!transient) throw err;
+        const queued = await enqueue(sale);
+        return { receiptId: queued.clientTicketId, queued: true };
+      }
     },
-    onSuccess: (ticket) => {
+    onSuccess: ({ receiptId }) => {
       clearCart();
       void queryClient.invalidateQueries({ queryKey: ['tickets'] });
-      router.replace(`/receipt/${ticket.id}`);
+      router.replace(`/receipt/${receiptId}`);
     },
     onError: (err) => setErrorText(errorMessage(err)),
   });
@@ -102,6 +161,7 @@ export default function CheckoutScreen() {
       keyboardVerticalOffset={Platform.OS === 'ios' ? 96 : 0}
     >
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <OfflineBanner />
         <View style={styles.card}>
           <Text style={styles.sectionLabel}>Order</Text>
           {items.map((item) => (
@@ -208,7 +268,13 @@ export default function CheckoutScreen() {
         ) : null}
 
         <Button
-          label={submit.isPending ? 'Processing order…' : 'Submit Order'}
+          label={
+            submit.isPending
+              ? 'Processing order…'
+              : offline
+                ? 'Submit Order (offline)'
+                : 'Submit Order'
+          }
           onPress={() => {
             setErrorText(null);
             submit.mutate();

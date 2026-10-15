@@ -101,6 +101,43 @@ must carry a complete, self-consistent payment record.
 
 ---
 
+## Working offline
+
+Connectivity is not something a till gets to assume. The app keeps working with
+no network at all:
+
+- **The menu survives.** Every successful load is written to disk; a load with no
+  connection falls back to that copy and says so.
+- **Checkout completes.** The order and its cash payment are recorded on the
+  device, the receipt prints immediately, and the sale is queued.
+- **The queue is visible.** A badge on the Tickets tab and a standing banner show
+  how many sales are still held locally.
+- **It syncs itself.** Queued sales go up automatically when the connection
+  returns, when the app is reopened, or on demand from Settings.
+- **Settings → Simulate offline** forces offline behaviour, so none of this
+  needs airplane mode to demonstrate.
+
+### Exactly once, no matter what
+
+The hard requirement is that restarting the app or retrying a sync never creates
+a duplicate ticket or a second charge. Three things combine to guarantee it:
+
+1. **Identity is minted before the first send.** Each sale gets a UUID written to
+   disk at the moment it is taken — not when it is sent — so every later attempt
+   carries the same key. Online sales carry one too, so a response lost in
+   flight cannot become a second charge.
+2. **The server keys on it.** `client_ticket_id` sits behind a unique index.
+   Resending returns the original ticket; two simultaneous syncs collapse onto
+   one row rather than racing. Replaying an identical payment returns the
+   receipt instead of a conflict, while a *different* amount is still rejected.
+3. **Nothing is marked done early.** A sale is only marked synced once the
+   server has confirmed both steps, and a sale interrupted mid-sync is returned
+   to the queue on next launch rather than stranded.
+
+The consequence is that a crash at any point is recoverable by trying again —
+there is no partial state a retry makes worse. 14 tests exercise exactly this,
+including a crash between creating the ticket and paying it.
+
 ## After deploying
 
 Open `https://<your-backend>/admin/diagnostics` in a browser. It reports how many

@@ -49,6 +49,8 @@ export interface Ticket {
   amountTenderedCents: number | null;
   changeDueCents: number | null;
   createdAt: string;
+  /** Present on sales that originated offline; lets a device match its queue. */
+  clientTicketId: string | null;
   items: TicketItem[];
 }
 
@@ -74,6 +76,10 @@ export interface CreateTicketRequest {
   subtotalCents: number;
   taxCents: number;
   totalCents: number;
+  /** Idempotency key for a sale taken offline and replayed later. */
+  clientTicketId?: string;
+  /** ISO timestamp of when the sale happened on the device. */
+  placedAt?: string;
 }
 
 export interface PayTicketRequest {

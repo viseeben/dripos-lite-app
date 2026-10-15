@@ -13,6 +13,7 @@ import {
 import { DMSans_400Regular, DMSans_500Medium, DMSans_700Bold } from '@expo-google-fonts/dm-sans';
 import { DMMono_400Regular, DMMono_500Medium } from '@expo-google-fonts/dm-mono';
 import { Colors, TypeScale } from '../src/theme';
+import { useOfflineRuntime } from '../src/lib/runtime';
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -41,6 +42,7 @@ function useAppStateFocusManager() {
 
 export default function RootLayout() {
   useAppStateFocusManager();
+  const { ready: offlineReady } = useOfflineRuntime();
 
   const [fontsLoaded, fontError] = useFonts({
     PlayfairDisplay_400Regular,
@@ -56,13 +58,15 @@ export default function RootLayout() {
 
   const onReady = useCallback(() => {
     // Render even if a font failed: system fallbacks beat a stuck splash screen.
-    if ((fontsLoaded || fontError) && !splashHidden) {
+    if ((fontsLoaded || fontError) && offlineReady && !splashHidden) {
       setSplashHidden(true);
       void SplashScreen.hideAsync();
     }
-  }, [fontsLoaded, fontError, splashHidden]);
+  }, [fontsLoaded, fontError, offlineReady, splashHidden]);
 
-  if (!fontsLoaded && !fontError) return null;
+  // Hold the splash until the queue has been read back, so the pending count
+  // is correct the first time it is shown rather than counting up from zero.
+  if ((!fontsLoaded && !fontError) || !offlineReady) return null;
 
   return (
     <QueryClientProvider client={queryClient}>
