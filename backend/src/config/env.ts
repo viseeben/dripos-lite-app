@@ -21,6 +21,12 @@ const EnvSchema = z.object({
   /** Bearer token guarding POST /admin/seed. REQUIRED in production. */
   ADMIN_TOKEN: z.string().min(8).optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  /**
+   * Injected by Railway. Surfaced in diagnostics so the commit actually running
+   * can be read off the deployment, rather than inferred from its behaviour.
+   */
+  RAILWAY_GIT_COMMIT_SHA: z.string().optional(),
+  RAILWAY_GIT_BRANCH: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

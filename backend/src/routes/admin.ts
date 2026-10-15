@@ -87,6 +87,11 @@ export const adminRoutes: FastifyPluginAsync<{ db: Database; env: Env }> = async
     return {
       ok: true,
       environment: env.NODE_ENV,
+      // Which commit is actually serving. Without this, "the fix is deployed"
+      // can only be inferred from behaviour, which is how a stale deploy ends
+      // up being mistaken for a bug in the app.
+      deployedCommit: env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? 'unknown',
+      deployedBranch: env.RAILWAY_GIT_BRANCH ?? 'unknown',
       migrations: migrations.rows.map((r) => r.name),
       mockApiConfigured: Boolean(env.MOCK_API_URL),
       adminTokenConfigured: Boolean(env.ADMIN_TOKEN),
